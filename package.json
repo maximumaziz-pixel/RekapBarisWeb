@@ -1,0 +1,22 @@
+{
+  "name": "rekapbaris-web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Platform digitalisasi event RekapBaris",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18 <25"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "check": "node --check server.js && node --check public/app.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "dotenv": "^16.6.1",
+    "express": "^5.1.0",
+    "google-auth-library": "^10.2.0",
+    "nodemailer": "^7.0.5"
+  }
+}

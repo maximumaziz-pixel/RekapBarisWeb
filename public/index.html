@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#073b2c">
+  <meta name="description" content="RekapBaris — Solusi Digitalisasi Event Anda. Kelola penilaian, voting pasukan, dan ticketing dalam satu platform.">
+  <title>RekapBaris — Solusi Digitalisasi Event Anda</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/shop.css">
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body>
+  <div class="announcement"><span class="announcement-dot"></span> Satu platform untuk event yang lebih tertata <span class="announcement-arrow">↗</span></div>
+  <header class="site-header">
+    <a class="brand" href="#home" aria-label="RekapBaris beranda"><img src="/logo-rekapbaris.png" alt="RekapBaris"></a>
+    <nav class="desktop-nav" aria-label="Navigasi utama">
+      <a href="#home" data-nav="home" class="nav-link active"><span>⌂</span> Home</a>
+      <a href="#event" data-nav="event" class="nav-link"><span>▦</span> Event</a>
+      <a href="#voting" data-nav="voting" class="nav-link"><span>♡</span> E-Voting</a>
+      <a href="#ticketing" data-nav="ticketing" class="nav-link"><span>▤</span> E-Ticketing</a>
+      <a href="#merch" data-nav="merch" class="nav-link"><span>◈</span> Merch</a>
+      <a href="#tentang" data-nav="tentang" class="nav-link"><span>ⓘ</span> Tentang</a>
+    </nav>
+    <div class="header-actions">
+      <button class="icon-button" id="theme-toggle" aria-label="Ganti tema" title="Ganti tema"><span id="theme-icon">☾</span></button>
+      <button class="button button-quiet header-login" data-open="login">Masuk</button>
+      <button class="button button-primary header-register" data-open="register">Daftar <span>↗</span></button>
+      <button class="mobile-menu icon-button" id="mobile-menu" aria-label="Buka menu">☰</button>
+    </div>
+  </header>
+  <nav class="mobile-nav" id="mobile-nav" aria-label="Navigasi mobile">
+    <a href="#home">⌂ &nbsp;Home</a><a href="#event">▦ &nbsp;Event</a><a href="#voting">♡ &nbsp;E-Voting</a><a href="#ticketing">▤ &nbsp;E-Ticketing</a><a href="#merch">◈ &nbsp;Merch</a><a href="#tentang">ⓘ &nbsp;Tentang</a>
+  </nav>
+  <main>
+    <section class="hero section-anchor" id="home">
+      <div class="hero-pattern"></div>
+      <div class="hero-content">
+        <div class="eyebrow"><span class="eyebrow-icon">✳</span> PLATFORM EVENT & KOMPETISI</div>
+        <h1>REKAP <span class="batik-word">BARIS</span><span class="hero-period">.</span></h1>
+        <p class="hero-subtitle">Solusi Digitalisasi Event Anda</p>
+        <p class="hero-description">Mengelola penilaian, voting pasukan, dan ticketing<br class="desktop-break"> dalam satu digital platform.</p>
+        <div class="hero-actions">
+          <button class="button button-primary button-large" data-open="organizer">Selenggarakan event Anda <span>↗</span></button>
+          <a class="button button-outline button-large" href="#tentang">Apa itu Rekap Baris? <span>↓</span></a>
+        </div>
+        <div class="hero-proof"><div class="avatar-stack"><span>R</span><span>B</span><span>✳</span></div><span>Event lebih rapi. Pengalaman lebih berarti.</span><span class="proof-star">✦</span></div>
+      </div>
+      <div class="hero-side-note"><span>DISIPLIN</span><i></i><span>KOLABORASI</span><i></i><span>PRESTASI</span></div>
+      <div class="hero-bottom"><span>01 — 06</span><span class="scroll-label">GULIR UNTUK MENJELAJAHI <span>↓</span></span><span>EST. 2026</span></div>
+    </section>
+    <section class="trust-strip"><span>DIRANCANG UNTUK</span><b>SEKOLAH</b><i>✳</i><b>KOMUNITAS</b><i>✳</i><b>PENYELENGGARA EVENT</b><i>✳</i><b>PASUKAN BARIS</b></section>
+    <section class="section events-section section-anchor" id="event">
+      <div class="section-heading"><div><div class="eyebrow"><span class="eyebrow-icon">✳</span> KALENDER KOLABORASI</div><h2>Event pilihan,<br><em>semangat tanpa batas.</em></h2></div><p>Jelajahi event dan kompetisi<br>yang bekerja sama dengan kami.</p></div>
+      <div class="event-controls"><label class="search-box"><span>⌕</span><input id="event-search" type="search" placeholder="Cari nama event, lokasi..." aria-label="Cari event"></label><select id="event-status" aria-label="Filter status"><option value="all">Semua event</option><option value="available">Tersedia</option><option value="ongoing">Berlangsung</option><option value="completed">Selesai</option></select><select id="event-sort" aria-label="Urutkan event"><option value="default">Urutkan: Default</option><option value="newest">Terbaru</option><option value="popular">Terpopuler</option><option value="nearest">Terdekat</option></select></div>
+      <div class="event-grid" id="event-grid"><div class="loading-card">Menyiapkan event pilihan...</div></div>
+      <div class="section-footer"><span id="event-count">Memuat event</span><a href="#event">LIHAT SEMUA EVENT <span>↗</span></a></div>
+    </section>
+    <section class="feature-band section-anchor" id="voting">
+      <div class="feature-copy"><div class="eyebrow eyebrow-light"><span class="eyebrow-icon">✳</span> DUKUNG YANG TERBAIK</div><h2>Sorakkan dukungan.<br><em>Pilih dengan bangga.</em></h2><p>Voting pasukan favorit kini transparan dan mudah. Temukan event yang tersedia, pilih pasukan kebanggaanmu, lalu tuntaskan dukungan lewat QRIS.</p><a class="button button-light" href="#event">Jelajahi event voting <span>↗</span></a></div>
+      <div class="vote-visual"><div class="vote-card"><div class="vote-top"><span>FAVORIT PENONTON</span><span class="live-badge">● LIVE</span></div><div class="vote-emblem">✳</div><h3>Semangat dalam<br>setiap langkah.</h3><div class="vote-lines"><span></span><span></span><span></span></div><div class="vote-foot"><span>REKAPBARIS</span><span>01 / 03</span></div></div><span class="visual-stamp">PILIH<br>DUKUNG<br>MENANG</span></div>
+    </section>
+    <section class="section ticket-section section-anchor" id="ticketing"><div class="ticket-intro"><div class="eyebrow"><span class="eyebrow-icon">✳</span> TIKET DI UJUNG JARI</div><h2>Lebih dekat dengan<br>momen <em>istimewa.</em></h2><p>Pilih event favoritmu, pesan tiket dengan aman, dan siap jadi bagian dari kemeriahannya.</p><a href="#event" class="text-link">CARI EVENT SEKARANG <span>↗</span></a></div><div class="ticket-art"><div class="ticket-shape"><div class="ticket-vertical">LIVE EVENT · REKAPBARIS · LIVE EVENT · REKAPBARIS ·</div><div class="ticket-inner"><span class="ticket-chip">E—TICKET</span><span class="ticket-symbol">✳</span><strong>JADI BAGIAN<br>DARI CERITA.</strong><small>QRIS · AMAN · PRAKTIS</small></div><div class="ticket-notch"></div></div><span class="ticket-caption">MOMEN SERU, TANPA RIBET.</span></div></section>
+    <section class="merch-shop section-anchor" id="merch"><div class="section-heading"><div><div class="eyebrow"><span class="eyebrow-icon">✳</span> MERCH REKAPBARIS</div><h2>Kenakan <em>semangatnya.</em></h2></div><p>Merchandise resmi untuk menemani<br>setiap momen dan barisan.</p></div><div class="merch-grid" id="merch-grid"><div class="loading-card">Menyiapkan koleksi...</div></div></section>
+    <section class="about-section section-anchor" id="tentang"><div class="about-number">RB<br><span>01</span></div><div class="about-content"><div class="eyebrow"><span class="eyebrow-icon">✳</span> TENTANG REKAPBARIS</div><h2>Event yang hebat<br>layak dikelola <em>lebih baik.</em></h2><p>RekapBaris adalah platform digital untuk membantu penyelenggara mengelola kompetisi dan event baris-berbaris. Dari pendaftaran peserta dan verifikasi akun hingga penilaian, voting pasukan terpopuler, serta pembelian tiket—semua tertata dalam satu tempat.</p><div class="about-points"><div><span>01</span><b>Kelola event</b><small>Informasi event lebih mudah dijangkau.</small></div><div><span>02</span><b>Voting transparan</b><small>Dukungan penonton tercatat dengan baik.</small></div><div><span>03</span><b>Transaksi praktis</b><small>Pembayaran QRIS melalui Midtrans.</small></div></div></div></section>
+    <section class="cta-section"><div class="cta-pattern"></div><div class="eyebrow eyebrow-light"><span class="eyebrow-icon">✳</span> SAATNYA BERGERAK</div><h2>Punya event? Mari<br><em>rapikan bersama.</em></h2><button class="button button-light button-large" data-open="organizer">Selenggarakan event <span>↗</span></button></section>
+  </main>
+  <footer class="site-footer"><a class="footer-brand" href="#home">REKAP<span>BARIS</span><small>.COM</small></a><span>Solusi Digitalisasi Event Anda</span><div class="footer-links"><a href="#event">Event</a><a href="#tentang">Tentang</a><a href="mailto:halo@rekapbaris.com">Hubungi kami ↗</a></div><small>© 2026 RekapBaris. Semua hak dilindungi.</small></footer>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <div class="modal-backdrop" id="modal-backdrop" aria-hidden="true"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><button class="modal-close" id="modal-close" aria-label="Tutup">×</button><div id="modal-content"></div></section></div>
+  <div class="page-loader" id="page-loader"><span class="loader-mark">RB</span></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>
