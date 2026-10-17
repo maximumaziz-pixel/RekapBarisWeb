@@ -9,7 +9,7 @@ Platform web responsif untuk informasi event, pendaftaran akun, verifikasi, voti
 1. Pasang Node.js versi **18, 20, 22, atau 24**. Di Hostinger pilih salah satu versi tersebut pada pengaturan aplikasi Node.js.
 2. Buka folder proyek ini di VS Code. Instal dependensi sekali dengan `npm install`.
 3. Salin `.env.example` menjadi `.env`, lalu ubah `SESSION_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `TEAM_EMAIL`, dan `TEAM_PASSWORD`. Password staf harus sekurang-kurangnya 12 karakter. Contoh secret acak dapat dibuat dengan `node -e "console.log(require('node:crypto').randomBytes(48).toString('hex'))"`.
-4. Jalankan `npm start`, lalu buka `http://localhost:3000`.
+4. Jalankan `npm start`, lalu buka `http://localhost:3000`. Server menyajikan halaman utama `index.html` dan memuat stylesheet serta aset dari folder `public`.
 
 Untuk pengembangan gunakan `npm run dev`. Server otomatis membuat folder `data`, database SQLite, contoh event, dan peserta voting saat pertama kali berjalan. `npm run check` memeriksa sintaks JavaScript.
 

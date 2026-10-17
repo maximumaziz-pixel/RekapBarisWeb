@@ -505,6 +505,9 @@ app.post("/api/staff/profile", requireAuth, requireStaff, (req, res) => {
     res.status(500).json({ error: "Perubahan akun gagal disimpan." });
   }
 });
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "index.html"));
+});
 app.use(express.static(path.join(__dirname, "public"), { extensions: ["html"] }));
 app.use((error, req, res, next) => {
   console.error("Kesalahan server:", error.message);
