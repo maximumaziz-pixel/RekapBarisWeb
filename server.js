@@ -8,6 +8,8 @@ const contentTypes = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
   ".ico": "image/x-icon",
+  ".jpeg": "image/jpeg",
+  ".jpg": "image/jpeg",
   ".js": "text/javascript; charset=utf-8",
   ".png": "image/png",
   ".svg": "image/svg+xml"
@@ -32,7 +34,7 @@ const server = http.createServer((request, response) => {
   const requestedPath = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
   const filePath = path.resolve(root, requestedPath);
   const relativePath = path.relative(root, filePath);
-  if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+  if (relativePath.startsWith("..") || path.isAbsolute(relativePath) || relativePath.split(path.sep).includes(".git")) {
     response.writeHead(403);
     response.end("Forbidden");
     return;
