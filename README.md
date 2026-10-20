@@ -1,281 +1,343 @@
 # Rekap Baris
 
-Platform web untuk pengelolaan event, pendaftaran peserta, e-voting, e-ticketing, dan merchandise. Aplikasi berada langsung di root repositori (folder `RekapBarisWeb`), dengan satu server Node.js yang menyajikan API Express sekaligus hasil build React.
+Platform manajemen event perlombaan, pendaftaran peserta, e-voting, e-ticketing, dan merchandise. Aplikasi memakai React + Vite + Tailwind CSS, Express, PostgreSQL, Prisma, Google OAuth 2.0, dan pembayaran QRIS Midtrans.
 
-## Fitur yang tersedia
+## Fitur
 
-- Halaman publik responsif, navigasi mobile yang sticky, transisi antartab, tema gelap/terang, pencarian serta filter event.
-- Pendaftaran peran Peserta, Penyelenggara, dan Juri. Login menggunakan OTP WhatsApp; pendaftaran menunggu verifikasi staf.
-- Penyelenggara dapat mengajukan event; event hanya muncul setelah disetujui Admin/Tim Rekap.
-- Pendaftaran peserta event, persetujuan peserta, e-voting, tiket, dan merchandise.
-- Checkout QRIS Midtrans dengan webhook bertanda tangan; stok merchandise dikurangi saat pesanan dibuat dan dikembalikan jika pembayaran gagal.
-- Dashboard staf untuk ringkasan, verifikasi akun, moderasi event, peserta, transaksi, dan penambahan merchandise.
-- Reset kata sandi melalui email SMTP dan perubahan kata sandi setelah login.
-- Logo lokal di `public/logo.svg`; ganti file tersebut dengan logo milik Anda menggunakan nama yang sama.
+- Beranda responsif dengan tema biru-emas dan toggle mode terang/gelap.
+- Direktori event dengan pencarian, filter status, dan pengurutan.
+- Pendaftaran peserta yang dapat diverifikasi staf.
+- E-voting, tiket penonton, dan merchandise melalui Midtrans Snap QRIS.
+- Login/daftar Google OAuth; pengguna baru menunggu persetujuan staf.
+- Dashboard Admin/Tim untuk ringkasan, akun, event, peserta, pembayaran, serta stok/produk.
+- Tombol chat WhatsApp Admin yang tersedia pada semua halaman.
+- Express menyajikan UI, aset `public/`, dan berkas `UPLOAD_DIR` melalui `/uploads/`.
 
-> **Status integrasi eksternal:** Fonnte, Midtrans, SMTP, dan PostgreSQL memerlukan akun/kredensial milik pemilik aplikasi. Nilai contoh di `.env.example` bukan kredensial aktif. Jangan menaruh token atau kunci privat di source code, percakapan, Git, atau frontend.
-
-## Teknologi
-
-- Node.js `18.18` sampai `24.x`, Express 4, React 18 + Vite.
-- PostgreSQL dan Prisma ORM (`prisma db push` menyelaraskan skema database).
-- OTP WhatsApp melalui Fonnte; QRIS melalui Midtrans Snap.
-- bcryptjs untuk hashing kata sandi, JWT dalam cookie HttpOnly, Zod untuk validasi, Helmet dan rate limit.
-- Lucide React untuk ikon; CSS responsif tanpa framework CSS tambahan.
-
-## Struktur folder
+## Isi proyek
 
 ```text
 RekapBarisWeb/
-├── .env.example
-├── .gitignore
+├── .env.example             Template konfigurasi (tidak berisi secret)
+├── ecosystem.config.js      Konfigurasi PM2
 ├── index.html
 ├── package.json
-├── README.md
-├── server.js                  # Express API, autentikasi, event, pembayaran dan dashboard
-├── setup.bat                  # Setup lokal Windows
-├── start.sh                   # Setup/build/start untuk shell Linux
+├── postcss.config.js
+├── server.js                Express API, OAuth, pembayaran, dan static file server
+├── tailwind.config.js
 ├── vite.config.js
 ├── prisma/
 │   ├── schema.prisma
-│   └── seed.js                # Membuat akun Admin dan Tim Rekap dari environment
+│   └── seed.js               Membuat/memperbarui akun Admin dan Tim
 ├── public/
 │   └── logo.svg
 └── src/
     ├── App.jsx
     ├── main.jsx
-    └── styles.css
+    ├── styles.css
+    └── components/
 ```
 
-## Persiapan kredensial yang aman
+File rahasia `.env` berada di root lokal/production dan diabaikan Git. Jangan mengirim atau memasukkan file itu ke Git.
 
-Token Fonnte pernah ditempelkan ke percakapan. Perlakukan token itu sebagai **sudah terpapar**: cabut/rotasi dari dashboard Fonnte sebelum mengaktifkan aplikasi. Jangan menyalin token lama tersebut ke `.env`.
+## 1. Persiapan komputer
 
-### 1. Persyaratan layanan
+Langkah-langkah berikut ditujukan untuk pemula. Untuk Windows, buka PowerShell atau Terminal dari VS Code.
 
-Siapkan:
+1. **Pasang Node.js.** Unduh versi LTS 20.x dari [nodejs.org](https://nodejs.org/), jalankan installer, lalu buka terminal baru dan periksa:
 
-1. Node.js 18.18–24.x dan npm.
-2. PostgreSQL yang bisa diakses oleh aplikasi (database dan user khusus aplikasi).
-3. Token Fonnte baru dengan perangkat WhatsApp yang tersambung.
-4. Midtrans Server Key dan Client Key. Mulai dari Sandbox.
-5. (Opsional) Akun Resend, API key, dan domain pengirim terverifikasi untuk reset kata sandi.
+   ```powershell
+   node --version
+   npm --version
+   ```
 
-Buat kredensial admin dan tim yang unik, gunakan kata sandi minimal 12 karakter, dan simpan di password manager. Akun tersebut dibuat oleh seed database dari nilai `ADMIN_*` dan `TEAM_*` di `.env`.
+   Node.js 18.18 atau lebih baru juga didukung.
+2. **Pasang Git.** Unduh dari [git-scm.com](https://git-scm.com/downloads), lalu verifikasi dengan `git --version`.
+3. **Pasang Visual Studio Code.** Unduh dari [code.visualstudio.com](https://code.visualstudio.com/). Buka folder proyek melalui **File → Open Folder**.
+4. **Siapkan PostgreSQL.** Pasang PostgreSQL 15 atau 16 dari [postgresql.org/download](https://www.postgresql.org/download/) (installer Windows dari EnterpriseDB juga tersedia). Ingat password yang dibuat untuk user `postgres`.
+5. **Siapkan akun integrasi.**
+   - Buat project Google Cloud, aktifkan Google Identity/OAuth, lalu buat OAuth Client ID jenis **Web application**.
+   - Buat akun [Midtrans Sandbox](https://dashboard.sandbox.midtrans.com/) untuk pengujian. Jangan gunakan Server Key production saat development.
+   - Tentukan nomor WhatsApp Admin dalam format internasional, misalnya `62812...` (tanpa `+`).
 
-### 2. Konfigurasi lokal
+## 2. Unduh dan pasang aplikasi
 
-Salin `.env.example` sebagai `.env`, lalu isi nilainya. **Jangan** commit `.env`.
+Clone repositori dari terminal:
 
-PowerShell:
+```powershell
+git clone https://github.com/maximumaziz-pixel/RekapBarisWeb.git
+cd RekapBarisWeb
+code .
+```
+
+Jika folder proyek sudah tersedia, cukup buka folder itu dan lanjut ke langkah konfigurasi.
+
+Salin template environment menjadi `.env`:
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-Linux/macOS:
-
-```sh
-cp .env.example .env
-```
-
-Contoh format `DATABASE_URL`:
+Buka `.env` di VS Code, lalu isi `DATABASE_URL`, `JWT_SECRET`, Google OAuth, Midtrans, nomor WhatsApp, serta nama dan email staf. Contoh URL database lokal:
 
 ```text
-postgresql://nama_user:kata_sandi@127.0.0.1:5432/rekapbaris?schema=public
+DATABASE_URL="postgresql://rekapbaris:password-anda@localhost:5432/rekapbaris?schema=public"
 ```
 
-Karakter khusus pada kata sandi database harus di-URL-encode. Gunakan `COOKIE_SECURE=false` hanya saat pengembangan lokal HTTP. Buat `JWT_SECRET` acak minimal 32 karakter, misalnya:
+Password yang mengandung karakter khusus URL (seperti `@`, `#`, atau `/`) harus di-encode. Ganti nilai contoh `JWT_SECRET` dengan string acak panjang; jangan gunakan nilai contoh untuk production. Isi `ADMIN_EMAIL` dan `TEAM_EMAIL` dengan email Google yang akan dipakai staf. `@example.com` pada template hanyalah placeholder, bukan akun untuk login.
 
+### Buat database lokal
+
+Di pgAdmin (ikut terpasang dengan PostgreSQL), klik kanan **Databases → Create → Database**, beri nama `rekapbaris`, lalu simpan. Atau buka SQL Shell (psql) dan jalankan:
+
+```sql
+CREATE USER rekapbaris WITH PASSWORD 'password-anda';
+CREATE DATABASE rekapbaris OWNER rekapbaris;
+```
+
+Sesuaikan username/password pada `DATABASE_URL`. Jangan membuka port database lokal ke jaringan publik.
+
+### Pasang dependensi dan jalankan
+ 
 ```powershell
-node -e "console.log(require('node:crypto').randomBytes(48).toString('hex'))"
-```
-
-Set `FONNTE_TOKEN`, `MIDTRANS_SERVER_KEY`, `MIDTRANS_CLIENT_KEY`, `MIDTRANS_IS_PRODUCTION=false`, `ADMIN_*`, dan `TEAM_*`. Untuk email reset, verifikasi domain pengirim pada Resend lalu isi `RESEND_API_KEY`, `EMAIL_FROM`, serta `APP_URL`. Jika layanan email belum dikonfigurasi, endpoint reset mengembalikan error konfigurasi secara eksplisit; email tidak akan berpura-pura terkirim.
-
-### 3. Instalasi dan jalankan
-
-Windows:
-
-```powershell
-.\setup.bat
-npm start
-```
-
-Linux:
-
-```sh
-chmod +x start.sh
-./start.sh
-```
-
-Script `start.sh` memasang dependency, membuat Prisma Client, menyelaraskan tabel PostgreSQL, membuat akun seed, membangun frontend, lalu memangkas dependency yang tidak diperlukan runtime. `setup.bat` melakukan instalasi dan build tanpa prune agar dependency development tetap tersedia untuk coding lokal. Setelah setup, `npm start` menjalankan server pada port `3000` (atau nilai `PORT`). Buka `http://localhost:3000`.
-
-Perintah manual yang setara:
-
-```sh
 npm install
 npm run db:setup
+npm run dev
+```
+
+Vite menampilkan alamat frontend (biasanya `http://localhost:5173`) dan Express API berjalan pada `http://localhost:3000`. Buka alamat Vite di browser. Untuk build production lokal:
+
+```powershell
 npm run build
 npm start
 ```
 
-`npm run dev` menjalankan Vite pada port 5173 dan API pada port 3000; Vite meneruskan `/api` ke Express. Database dan `.env` harus siap lebih dahulu.
+`npm start` memerlukan database yang dapat diakses. Pemeriksaan cepat: buka `http://localhost:3000/api/health`; hasil sukses berisi `{"ok":true,...}`.
 
-### 4. Akun staf awal
+> `db:deploy` memakai `prisma db push` tanpa flag penghapusan data otomatis. Tetap buat backup sebelum perubahan skema, terutama pada database yang berisi data penting.
 
-Seed membuat satu `ADMIN` dan satu `TEAM` dari environment. Isikan email, nomor WhatsApp, nama, serta kata sandi minimal 12 karakter pada `ADMIN_*` dan `TEAM_*` sebelum `npm run db:seed`.
+## 3. Konfigurasi Google OAuth
 
-- Akun staf aktif dan dianggap sudah verifikasi WhatsApp agar dashboard dapat digunakan saat instalasi.
-- Akun pengguna publik tetap `PENDING` sampai OTP terverifikasi dan staf menyetujui akun.
-- Seed berikutnya tidak mengganti kata sandi staf yang telah diubah.
-- Endpoint `POST /api/auth/password` menerima kata sandi saat ini dan yang baru untuk penggantian. Login web tetap memakai OTP WhatsApp.
-
-## Deploy ke Hostinger
-
-Nama menu dapat berbeda mengikuti paket/versi panel Hostinger. Gunakan Node.js App/Setup Node.js App jika tersedia, atau VPS dengan process manager dan reverse proxy.
-
-### Opsi A — Hostinger Node.js App
-
-1. Pastikan domain telah diarahkan ke hosting dan PostgreSQL tersedia serta dapat diakses oleh aplikasi.
-2. Upload isi repositori ke **document/application root** `RekapBarisWeb` (bukan membuat `RekapBarisWeb/RekapBarisWeb`). Jangan upload `node_modules`, `.env` development, atau kunci Midtrans/Fonnte ke Git.
-3. Pilih Node.js versi 20 atau 22 (versi lain yang didukung: 18.18–24.x) dan mode production.
-4. Atur environment variables di panel. Masukkan semua nilai pada `.env.example` yang relevan, tetapi gunakan:
-   - `NODE_ENV=production`
-   - `APP_URL=https://domain-anda`
-   - `COOKIE_SECURE=true`
-   - `DATABASE_URL` PostgreSQL produksi
-   - `JWT_SECRET` baru yang kuat
-   - token Fonnte yang baru dirotasi
-   - kredensial Midtrans **production** hanya setelah uji sandbox tuntas.
-5. Atur install command `npm install`, build command `npm run db:setup && npm run build && npm prune --omit=dev` pada pemasangan awal, dan start command `npm start`. Pastikan `PORT` yang diberikan panel diteruskan ke Node.js (aplikasi sudah membacanya).
-6. Jika panel tidak menyediakan terminal saat deployment, siapkan database serta environment variables lebih dahulu dan gunakan build/deploy hook panel. Jangan menjalankan seed dengan nilai contoh.
-7. Setelah deployment, buka `https://domain-anda/api/health`. Respons `{ "ok": true, ... }` menandakan server serta koneksi database berhasil.
-
-Untuk deployment berikutnya, umumnya gunakan build `npm run db:generate && npm run build`; jalankan sinkronisasi database dan seed secara terkontrol ketika skema berubah. `prisma db push` menyelaraskan skema saat ini tanpa berkas migration dan bukan pengganti workflow migration terencana untuk tim/produksi berskala besar.
-
-### Opsi B — VPS Hostinger dengan systemd
-
-Pasang Node.js LTS (18.18 atau lebih baru hingga 24.x), PostgreSQL, dan Nginx. Upload aplikasi ke `/var/www/RekapBarisWeb` dan atur pemilik file untuk user service.
-
-```sh
-cd /var/www/RekapBarisWeb
-cp .env.example .env
-nano .env
-npm install
-npm run db:setup
-npm run build
-npm prune --omit=dev
-```
-
-Atur `.env` agar `PORT=3000`, `NODE_ENV=production`, `APP_URL=https://domain-anda`, `COOKIE_SECURE=true`, serta gunakan secret produksi. Jalankan pembuatan Prisma Client dan build sebelum `npm prune --omit=dev`; instal ulang dependency lengkap sementara untuk build/skema berikutnya. Lindungi file `.env` tersebut:
-
-```sh
-chmod 600 .env
-```
-
-Buat service systemd `/etc/systemd/system/rekapbaris.service` (ubah `User` dan `WorkingDirectory` sesuai server):
-
-```ini
-[Unit]
-Description=Rekap Baris Web
-After=network.target
-
-[Service]
-Type=simple
-User=www-data
-WorkingDirectory=/var/www/RekapBarisWeb
-EnvironmentFile=/var/www/RekapBarisWeb/.env
-ExecStart=/usr/bin/node /var/www/RekapBarisWeb/server.js
-Restart=on-failure
-RestartSec=5
-NoNewPrivileges=true
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Aktifkan service:
-
-```sh
-sudo systemctl daemon-reload
-sudo systemctl enable --now rekapbaris
-sudo systemctl status rekapbaris
-```
-
-Konfigurasikan Nginx sebagai reverse proxy HTTPS ke `http://127.0.0.1:3000`, aktifkan sertifikat TLS, lalu reload Nginx. Jangan membuka port database ke publik. Gunakan firewall untuk hanya membuka SSH, HTTP, dan HTTPS.
-
-## Integrasi Fonnte OTP
-
-- API pengiriman: `POST https://api.fonnte.com/send`, token dibaca hanya dari `FONNTE_TOKEN`.
-- Format nomor internasional tanpa tanda `+` (contoh format: `62812...`).
-- Kode OTP 6 digit disimpan sebagai HMAC, kedaluwarsa 5 menit, maksimal 5 percobaan verifikasi; endpoint autentikasi diberi rate limit.
-- Alur daftar: akun dibuat berstatus `PENDING`, OTP memverifikasi nomor, lalu Admin/Tim Rekap menyetujui akun.
-- Alur masuk: `POST /api/auth/otp/request` lalu `POST /api/auth/otp/verify`.
-- Jika Fonnte gagal, API mengembalikan error dan tidak membuat sesi login.
-
-## Integrasi Midtrans QRIS
-
-1. Mulai dengan kredensial Sandbox pada `.env`; jangan menggunakan Server Key di browser.
-2. Endpoint pembayaran membatasi metode Snap ke QRIS. API mengirim token checkout ke Midtrans dan pengguna diarahkan ke halaman pembayaran Midtrans.
-3. Atur Payment Notification URL pada dashboard Midtrans menjadi:
+1. Di [Google Cloud Console](https://console.cloud.google.com/), pilih project dan konfigurasi OAuth consent screen serta domain aplikasi.
+2. Buat **Credentials → Create Credentials → OAuth client ID → Web application**.
+3. Untuk uji lokal tambahkan Authorized redirect URI:
 
    ```text
-   https://domain-anda/api/payments/midtrans/notification
+   http://localhost:3000/api/auth/google/callback
    ```
 
-4. Pastikan endpoint dapat dijangkau publik melalui HTTPS. Status pembayaran hanya berubah ketika webhook dengan signature SHA-512 yang valid diterima.
-5. Uji pembayaran pending, sukses, gagal, duplikasi webhook, serta stok merchandise. Setelah Sandbox diverifikasi, isi key produksi dan set `MIDTRANS_IS_PRODUCTION=true`.
+4. Salin Client ID dan Client Secret ke `GOOGLE_CLIENT_ID` dan `GOOGLE_CLIENT_SECRET` di `.env`.
+5. `GOOGLE_CALLBACK_URL` harus sama persis dengan URI yang terdaftar. Saat production gunakan HTTPS, misalnya:
 
-Nilai harga vote dan harga tiket awal ditentukan oleh event; harga vote default Rp1.000. Edit konfigurasi event pada database/layanan admin sebelum penjualan jika butuh harga berbeda. Harga `0` tidak dapat dipakai untuk checkout berbayar.
+   ```text
+   https://rekapbaris.com/api/auth/google/callback
+   ```
 
-## API utama
+Login dan pendaftaran menggunakan akun Google dengan email terverifikasi. Akun baru berstatus menunggu verifikasi Admin/Tim. Seed membuat akun staf aktif berdasarkan email yang dikonfigurasi; role staf tidak dapat dipilih dari formulir publik.
 
-| Method | Path | Keterangan |
-|---|---|---|
-| `GET` | `/api/health` | Cek aplikasi dan koneksi database |
-| `POST` | `/api/auth/register` | Membuat akun publik dan mengirim OTP |
-| `POST` | `/api/auth/otp/request` | Meminta OTP login WhatsApp |
-| `POST` | `/api/auth/otp/verify` | Verifikasi OTP dan membuat cookie sesi |
-| `POST` | `/api/auth/forgot-password` | Mengirim tautan reset melalui SMTP |
-| `GET` | `/api/events` | Event yang disetujui |
-| `POST` | `/api/events/:id/register` | Mendaftar sebagai peserta |
-| `POST` | `/api/payments/vote` | Membuat checkout vote |
-| `POST` | `/api/payments/ticket` | Membuat checkout tiket |
-| `POST` | `/api/payments/merch` | Membuat checkout merchandise |
-| `POST` | `/api/payments/midtrans/notification` | Webhook status Midtrans |
-| `GET/PATCH` | `/api/admin/*` | Dashboard dan moderasi khusus staf aktif |
+## 4. Midtrans QRIS
 
-Semua API menerima JSON. Cookie sesi HttpOnly, SameSite Lax, dan Secure saat production digunakan untuk rute terautentikasi. Endpoint admin melakukan pemeriksaan role di server, bukan hanya menyembunyikan menu frontend.
+1. Salin **Server Key** dan **Client Key** Sandbox dari dashboard Midtrans ke `.env`.
+2. Pastikan `MIDTRANS_IS_PRODUCTION=false` selama pengujian.
+3. Setelah aplikasi dapat diakses publik melalui HTTPS, daftarkan URL notifikasi pada dashboard Midtrans:
 
-## Menyesuaikan tampilan dan aset
+   ```text
+   https://rekapbaris.com/api/payments/midtrans/notification
+   ```
 
-- Ganti `public/logo.svg` dengan logo SVG milik Anda dan pertahankan nama file.
-- Poster event dan gambar produk memakai URL HTTPS yang diisi pada data produk/event. Gunakan sumber gambar yang berhak Anda gunakan dan optimalkan ukuran gambar sebelum upload.
-- Warna, responsivitas, loading state, dan transisi ada di `src/styles.css`; komponen halaman ada di `src/App.jsx`.
-- Jangan memasukkan secret API, password, atau token pembayaran ke frontend.
+4. Uji pembayaran berhasil, kedaluwarsa, pembatalan, stok produk, dan status transaksi dengan akun Sandbox.
+5. Setelah akun production disetujui, ganti key Sandbox dengan key Production dan set `MIDTRANS_IS_PRODUCTION=true`. Jangan mencampur pasangan key Sandbox dan Production.
 
-## Pemeriksaan lokal
+Server memvalidasi signature notifikasi dan jumlah pembayaran sebelum menandai transaksi lunas. Kunci rahasia tidak dikirim ke frontend.
 
-```sh
-npm run check
-npm run build
-npm start
+## 5. Deploy ke VPS Biznet Gio — Ubuntu 22.04
+
+### 5.1 Siapkan server dan domain
+
+1. Buat VPS Ubuntu 22.04 pada Biznet Gio dan catat alamat IPv4 publiknya.
+2. Pada pengelola DNS domain, arahkan record `A` untuk `rekapbaris.com` dan `www` ke IPv4 VPS. Tunggu propagasi DNS.
+3. Masuk melalui SSH dari komputer:
+
+   ```powershell
+   ssh root@IP_VPS
+   ```
+
+4. Perbarui server dan pasang alat dasar:
+
+   ```bash
+   apt update && apt upgrade -y
+   apt install -y git curl nginx postgresql postgresql-contrib build-essential
+   ```
+
+Aktifkan firewall hanya setelah aturan SSH dibuat. Buka SSH, HTTP, dan HTTPS; jangan membuka port PostgreSQL ke internet:
+
+```bash
+ufw allow OpenSSH
+ufw allow 80/tcp
+ufw allow 443/tcp
+ufw enable
 ```
 
-Untuk cek layanan setelah berjalan: `GET http://localhost:3000/api/health`. Pastikan PostgreSQL aktif dan `.env` valid sebelum menjalankan seed atau server.
+### 5.2 Pasang Node.js, PM2, dan PostgreSQL
 
-## Rekomendasi ekstensi/library
+Pasang Node.js LTS 20 melalui NodeSource:
 
-**VS Code:** ESLint, Prettier, Prisma, DotENV, Error Lens, EditorConfig, REST Client, dan GitLens. Gunakan hanya ekstensi yang dipercaya dan hindari memasukkan nilai `.env` ke file request yang masuk Git.
+```bash
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+apt install -y nodejs
+node --version
+npm --version
+npm install --global pm2
+```
 
-**Library saat ini:** React, Vite, Express, Prisma, PostgreSQL, Lucide React, Zod, bcryptjs, Helmet, express-rate-limit, dan Midtrans Client. Email reset memakai Fetch bawaan Node ke Resend sehingga tidak menambah dependency SMTP. Tambahkan Socket.IO hanya bila pembaruan voting/dashboard real-time benar-benar dibutuhkan; polling ringan atau refresh manual lebih sederhana sebagai tahap awal. Tailwind CSS/Framer Motion juga opsional—UI ini memakai CSS responsif dan animasi CSS agar dependency tetap ringkas.
+Buat database lokal di VPS:
 
-## Catatan produksi
+```bash
+sudo -u postgres createuser --pwprompt rekapbaris
+sudo -u postgres createdb --owner=rekapbaris rekapbaris
+```
 
-- Sediakan backup PostgreSQL terenkripsi dan uji pemulihan sebelum penggunaan publik.
-- Gunakan secret unik per environment, rotasi token yang pernah terekspos, batasi akses ke panel, dan audit transaksi.
-- Audit dependency setelah upgrade Express/Midtrans dan penggunaan Fetch untuk email masih melaporkan empat advisori tinggi pada dependency transitif CLI Prisma 6 (`deepmerge-ts` dan `effect`). Prisma CLI hanya dibutuhkan pada tahap build/sinkronisasi skema; tidak tercantum dalam `npm ls --omit=dev --depth=0`. Prisma 7 tidak dipakai karena akan mengorbankan dukungan Node 18 yang diminta. Pantau rilis Prisma 6 yang memperbaiki dependency tersebut dan evaluasi ulang audit saat upgrade.
-- Pastikan kebijakan privasi, syarat penggunaan, pajak/izin, refund, dan ketentuan voting/ticketing sesuai operasional Anda.
-- Skema saat ini adalah fondasi aplikasi awal. Pengelolaan peserta juri yang kompleks, check-in QR tiket, dispute/refund, laporan akuntansi, dan alur penetapan harga event tingkat lanjut perlu dirancang sesuai proses bisnis sebelum dipakai untuk event komersial besar.
+Simpan password database dengan aman; gunakan di `DATABASE_URL`. Database lokal pada VPS tidak perlu diekspos ke internet.
+
+### 5.3 Ambil aplikasi dan siapkan environment production
+
+Buat direktori aplikasi, clone repositori, lalu pasang dependencies:
+
+```bash
+mkdir -p /var/www
+cd /var/www
+git clone https://github.com/maximumaziz-pixel/RekapBarisWeb.git
+cd /var/www/RekapBarisWeb
+npm ci
+```
+
+Buat file production tanpa menyalin secret ke repository:
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+Atur nilai production setidaknya seperti berikut:
+
+```dotenv
+PORT=3000
+APP_URL=https://rekapbaris.com
+COOKIE_SECURE=true
+JWT_SECRET=<string-acak-rahasia-minimal-32-karakter>
+DATABASE_URL=postgresql://rekapbaris:<password>@localhost:5432/rekapbaris?schema=public
+GOOGLE_CALLBACK_URL=https://rekapbaris.com/api/auth/google/callback
+MIDTRANS_IS_PRODUCTION=false
+UPLOAD_DIR=/var/www/RekapBarisWeb/uploads
+```
+
+Isi juga kredensial Google, key Midtrans, nomor WhatsApp, `ADMIN_NAME`, `ADMIN_EMAIL`, `TEAM_NAME`, dan `TEAM_EMAIL`. Awali dengan Midtrans Sandbox; aktifkan production hanya sesudah uji dan verifikasi. Jangan menaruh tanda kurung sudut pada nilai sebenarnya. PM2 mengatur `NODE_ENV=production` dari `ecosystem.config.js`; jangan menaruh variabel itu di `.env` karena Vite mengatur mode build-nya sendiri. Batasi akses file konfigurasi:
+
+```bash
+chmod 600 .env
+mkdir -p uploads
+```
+
+Tambahkan URL callback HTTPS di Google Cloud Console sebelum menguji login. Simpan `.env` dan cadangan database di lokasi privat yang aksesnya terbatas.
+
+### 5.4 Siapkan database dan build
+
+```bash
+npm run db:generate
+npm run db:deploy
+npm run db:seed
+npm run build
+```
+
+`db:seed` membuat atau memperbarui dua akun staf dari email environment. Jalankan seed lagi setelah mengubah email staf. Akun masuk melalui tombol Google menggunakan email yang sama.
+
+### 5.5 Jalankan aplikasi dengan PM2
+
+PM2 mengelola proses Node dan memulihkannya setelah restart:
+
+```bash
+pm2 startOrReload ecosystem.config.js --update-env
+pm2 status
+pm2 logs rekapbaris
+pm2 save
+pm2 startup
+```
+
+Jika `pm2 startup` mencetak sebuah perintah `sudo ...`, salin dan jalankan perintah yang dicetak itu sebagai root, lalu simpan daftar proses lagi:
+
+```bash
+pm2 save
+```
+
+Periksa aplikasi lokal di VPS dengan `curl http://127.0.0.1:3000/api/health`. Jangan membuka port 3000 pada firewall publik; Nginx akan meneruskan permintaan ke sana.
+
+### 5.6 Pasang Nginx sebagai reverse proxy
+
+Untuk memperoleh sertifikat pertama kali, siapkan konfigurasi HTTP sederhana:
+
+```bash
+cat > /etc/nginx/sites-available/rekapbaris <<'NGINX'
+server {
+    listen 80;
+    server_name rekapbaris.com www.rekapbaris.com;
+    client_max_body_size 10m;
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+NGINX
+ln -s /etc/nginx/sites-available/rekapbaris /etc/nginx/sites-enabled/rekapbaris
+nginx -t
+systemctl reload nginx
+```
+
+Hapus symlink default jika bentrok (`rm /etc/nginx/sites-enabled/default`), lalu pasang Certbot dan terbitkan sertifikat:
+
+```bash
+apt install -y certbot python3-certbot-nginx
+certbot --nginx -d rekapbaris.com -d www.rekapbaris.com
+```
+
+Certbot meminta alamat email dan persetujuan. Setelah sertifikat terbit, sesuaikan `deploy/nginx/rekapbaris.conf` jika nama domain berbeda, lalu salin konfigurasi dan uji:
+
+```bash
+cp deploy/nginx/rekapbaris.conf /etc/nginx/sites-available/rekapbaris
+nginx -t
+systemctl reload nginx
+certbot renew --dry-run
+```
+
+Konfigurasi repo mengarahkan HTTP ke HTTPS dan meneruskan traffic HTTPS ke Express pada port `3000`. Pastikan path sertifikat pada file cocok dengan domain di server.
+
+### 5.7 Verifikasi, update, dan backup
+
+- Buka `https://rekapbaris.com` dan `https://rekapbaris.com/api/health`.
+- Uji login Google, dashboard staf, transaksi Sandbox, dan webhook dari dashboard Midtrans.
+- Pantau `pm2 logs rekapbaris` dan `journalctl -u nginx`.
+- Untuk pembaruan, masuk ke direktori aplikasi, ambil perubahan Git, jalankan `npm ci`, `npm run db:generate`, `npm run db:deploy`, `npm run build`, lalu `pm2 restart rekapbaris --update-env`.
+- Backup PostgreSQL (contoh): `sudo -u postgres pg_dump rekapbaris > /lokasi-aman/rekapbaris.sql`. Backup juga folder uploads dan environment secara aman; jangan simpan backup di folder publik web.
+
+## Pengelolaan file dan konfigurasi
+
+- `public/logo.svg` dipakai sebagai logo navbar, ikon situs, dan watermark hero.
+- Express melayani file statis dari `public/` dan hasil build `dist/`. Berkas dalam `UPLOAD_DIR` tersedia melalui `/uploads/`; file dapat diletakkan melalui SFTP/alat deployment. Endpoint upload belum disediakan, jadi jangan memberi akses tulis publik langsung ke server.
+- Untuk mengubah desain Tailwind, edit `tailwind.config.js` dan `src/styles.css`; layout halaman berada di `src/App.jsx`.
+- Toggle tema menyimpan pilihan browser. WhatsApp mengarah ke nomor `VITE_ADMIN_WHATSAPP`.
+- Skema database PostgreSQL berada di `prisma/schema.prisma`. Salin `.env.example` hanya untuk membuat environment baru; jangan pernah menimpa `.env` production yang sudah berisi credential.
+
+## Perintah pengembangan
+
+```bash
+npm run dev          # Vite + Express untuk development
+npm run build        # Build frontend production
+npm start             # Jalankan Express dan frontend hasil build
+npm run check         # Syntax check backend dan seed
+npm run db:validate   # Validasi schema Prisma
+npm run db:generate   # Generate Prisma Client
+npm run db:deploy     # Sinkronkan schema ke database
+npm run db:seed       # Seed akun Admin dan Tim
+```

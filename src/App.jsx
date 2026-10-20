@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowDown, ArrowRight, ArrowUpRight, BadgeCheck, CalendarDays, Check,
-  ChevronDown, Clock3, Compass, CreditCard, Fingerprint, Flag, Heart,
-  Instagram, LayoutDashboard, LockKeyhole, Mail, Moon, Search,
+  ChevronDown, Clock3, Compass, CreditCard, Fingerprint, Heart,
+  Instagram, LayoutDashboard, LockKeyhole, Moon, Search,
   ShieldCheck, ShoppingBag, Sun, Ticket, Trophy, UserRound, Users, Vote,
   X, Zap
 } from "lucide-react";
+import GoogleAuthModal from "./components/AuthModal.jsx";
+import WhatsAppFloat from "./components/WhatsAppFloat.jsx";
 
 const navigation = [
   { id: "home", label: "Home", icon: Compass },
@@ -15,24 +17,20 @@ const navigation = [
   { id: "merch", label: "Merch", icon: ShoppingBag },
   { id: "about", label: "Tentang", icon: Fingerprint }
 ];
-const roleOptions = [
-  { id: "PARTICIPANT", label: "Peserta", icon: UserRound },
-  { id: "ORGANIZER", label: "Penyelenggara", icon: Flag },
-  { id: "JUDGE", label: "Juri", icon: Trophy }
-];
-
 async function api(path, options = {}) {
   const response = await fetch(`/api${path}`, {
     credentials: "include",
     headers: { "Content-Type": "application/json", ...options.headers },
     ...options
   });
-  const data = response.status === 204 ? null : await response.json();
+  const isJson = response.headers.get("content-type")?.includes("application/json");
+  const data = response.status === 204 || !isJson ? null : await response.json();
   if (!response.ok) {
-    const error = new Error(data?.error || "Permintaan tidak dapat diproses.");
+    const error = new Error(data?.error || `Server mengembalikan respons HTTP ${response.status}.`);
     error.status = response.status;
     throw error;
   }
+  if (response.status !== 204 && !isJson) throw new Error("Server mengembalikan respons yang tidak valid.");
   return data;
 }
 
@@ -56,13 +54,9 @@ function App() {
   const [theme, setTheme] = useState(() => localStorage.getItem("rb-theme") || "light");
   const [activeTab, setActiveTab] = useState("home");
   const [user, setUser] = useState(null);
-  const [authMode, setAuthMode] = useState(() => window.location.pathname === "/reset-password" ? "reset" : "");
-  const [authBusy, setAuthBusy] = useState(false);
+  const [authMode, setAuthMode] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
-  const [authForm, setAuthForm] = useState({ name: "", email: "", phone: "", password: "", code: "", role: "PARTICIPANT", institution: "", eventName: "" });
-  const [authPhone, setAuthPhone] = useState("");
-  const [resetToken, setResetToken] = useState(new URLSearchParams(window.location.search).get("token") || "");
   const [events, setEvents] = useState([]);
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -85,6 +79,27 @@ function App() {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("rb-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const result = params.get("auth");
+    const messages = {
+      success: "Berhasil masuk dengan Google. Selamat datang!",
+      pending: "Akun Anda masih menunggu persetujuan tim Rekap Baris.",
+      blocked: "Akun ini tidak dapat digunakan. Hubungi administrator.",
+      cancelled: "Login Google dibatalkan.",
+      account_conflict: "Email ini sudah terhubung ke akun Google lain.",
+      google_error: "Login Google gagal. Silakan coba kembali."
+    };
+    if (!result) return;
+    if (result === "google_error" || result === "account_conflict") {
+      setError(messages[result]);
+      setAuthMode("login");
+    } else {
+      setNotice(messages[result] || "Status login Google diperbarui.");
+    }
+    window.history.replaceState({}, "", `${window.location.pathname}${window.location.hash}`);
+  }, []);
 
   const refreshPublicData = useCallback(async () => {
     setLoading(true);
@@ -137,59 +152,9 @@ function App() {
     }, 170);
   };
 
-  const updateAuthField = (event) => setAuthForm((current) => ({ ...current, [event.target.name]: event.target.value }));
-  const submitAuth = async (event) => {
-    event.preventDefault();
-    setAuthBusy(true);
-    setError("");
-    setNotice("");
-    try {
-      if (authMode === "register") {
-        await api("/auth/register", {
-          method: "POST",
-          body: JSON.stringify({ ...authForm, phone: authForm.phone.trim() })
-        });
-        setAuthPhone(authForm.phone.trim());
-        setNotice("OTP dikirim. Verifikasi nomor WhatsApp Anda.");
-        setAuthMode("otp");
-      } else if (authMode === "login") {
-        await api("/auth/otp/request", { method: "POST", body: JSON.stringify({ phone: authForm.phone }) });
-        setAuthPhone(authForm.phone.trim());
-        setNotice("Jika nomor terdaftar dan aktif, kode OTP telah dikirim.");
-        setAuthMode("otp");
-      } else if (authMode === "otp") {
-        const data = await api("/auth/otp/verify", {
-          method: "POST",
-          body: JSON.stringify({ phone: authPhone, code: authForm.code })
-        });
-        setUser(data.user);
-        setAuthMode("");
-        setAuthForm((current) => ({ ...current, code: "" }));
-        setNotice("Berhasil masuk. Selamat datang kembali!");
-      } else if (authMode === "forgot") {
-        const data = await api("/auth/forgot-password", { method: "POST", body: JSON.stringify({ email: authForm.email }) });
-        setNotice(data.message);
-        setAuthMode("login");
-      } else if (authMode === "reset") {
-        const data = await api("/auth/reset-password", {
-          method: "POST",
-          body: JSON.stringify({ token: resetToken, password: authForm.password })
-        });
-        setNotice(data.message);
-        setAuthMode("login");
-        window.history.replaceState({}, "", "/");
-      }
-    } catch (requestError) {
-      setError(requestError.message);
-    } finally {
-      setAuthBusy(false);
-    }
-  };
-
   const startAuth = (mode) => {
     setError("");
     setNotice("");
-    setAuthForm((current) => ({ ...current, password: "", code: "" }));
     setAuthMode(mode);
   };
 
@@ -221,7 +186,7 @@ function App() {
     if (!user) {
       setSelectedEvent(null);
       startAuth("login");
-      setError("Masuk dengan OTP WhatsApp untuk melanjutkan.");
+      setError("Masuk dengan Google untuk melanjutkan.");
       return;
     }
     setBusyId(busyKey);
@@ -330,14 +295,6 @@ function App() {
     }
   };
 
-  const changePassword = async ({ currentPassword, newPassword }) => {
-    await api("/auth/password", {
-      method: "POST",
-      body: JSON.stringify({ currentPassword, newPassword })
-    });
-    setNotice("Kata sandi akun staf berhasil diperbarui.");
-  };
-
   const visibleEvents = useMemo(() => {
     const query = search.trim().toLowerCase();
     const filtered = events.filter((event) => {
@@ -354,7 +311,7 @@ function App() {
   }, [events, search, sortBy, statusFilter]);
 
   return (
-    <div className="app-shell">
+    <div className="app-shell min-h-screen">
       <header className="topbar">
         <button className="brand" type="button" onClick={() => openTab("home")} aria-label="Rekap Baris, ke beranda">
           <img src="/logo.svg" alt="" />
@@ -442,26 +399,20 @@ function App() {
               onUserStatus={(id, status) => changeStatus(`/admin/users/${id}/status`, status)}
               onEventStatus={(id, status) => changeStatus(`/admin/events/${id}/status`, status)}
               onRefresh={refreshDashboard}
-            /><DashboardTools products={staffData.products} events={staffData.events} busyId={busyId} eventForm={eventForm} setEventForm={setEventForm} onEventCreate={createEvent} onProductUpdate={updateProduct} onPasswordChange={changePassword} /></>}
+            /><DashboardTools products={staffData.products} events={staffData.events} busyId={busyId} eventForm={eventForm} setEventForm={setEventForm} onEventCreate={createEvent} onProductUpdate={updateProduct} /></>}
           </>
         )}
       </main>
 
       <Footer onNavigate={openTab} />
 
-      {authMode && <AuthModal
+      <WhatsAppFloat />
+
+      {authMode && <GoogleAuthModal
         mode={authMode}
         setMode={startAuth}
         close={() => { setAuthMode(""); setError(""); }}
-        form={authForm}
-        update={updateAuthField}
-        submit={submitAuth}
-        busy={authBusy}
-        notice={notice}
         error={error}
-        phone={authPhone}
-        resetToken={resetToken}
-        setResetToken={setResetToken}
       />}
 
       {selectedEvent && <EventModal
@@ -508,6 +459,7 @@ function HomePage({ onRegister, onLogin, onExplore, onBrowse }) {
         </div>
         <div className="hero-art" aria-label="Ilustrasi event Rekap Baris">
           <div className="hero-glow" />
+          <img className="hero-logo-watermark" src="/logo.svg" alt="" aria-hidden="true" />
           <div className="hero-ring ring-one" /><div className="hero-ring ring-two" />
           <div className="hero-orbit"><span /><span /><span /></div>
           <div className="hero-card hero-card-top"><div className="mini-icon"><Trophy size={17} /></div><div><strong>Baris Nusantara</strong><small>Event aktif • Bandung</small></div><BadgeCheck size={17} className="verified-mark" /></div>
@@ -602,33 +554,82 @@ function AboutPage({ onJoin }) {
 function DashboardPage({ user, summary, data, section, setSection, busyId, productForm, setProductForm, onProductCreate, onUserStatus, onEventStatus, onRefresh }) {
   const sections = [
     { id: "overview", label: "Ringkasan", icon: LayoutDashboard },
-    { id: "users", label: "Akun & verifikasi", icon: Users },
+    { id: "users", label: "Akun pengguna", icon: Users },
     { id: "events", label: "Manajemen event", icon: CalendarDays },
     { id: "payments", label: "Voting & ticketing", icon: CreditCard },
     { id: "merch", label: "Merchandise", icon: ShoppingBag }
   ];
-  return <section className="section-wrap dashboard-page"><div className="dashboard-heading"><div><span className="eyebrow">RUANG KERJA / ADMINISTRASI</span><h1>Selamat datang,<br /><em>{user?.name || "Tim Rekap"}.</em></h1><p>Kelola akun, event, transaksi, dan aktivitas komunitas.</p></div><button className="button button-outline" type="button" onClick={onRefresh}><ArrowRight size={15} /> Muat ulang</button></div><div className="dashboard-layout"><aside className="dashboard-sidebar">{sections.map(({ id, label, icon: Icon }) => <button key={id} className={section === id ? "is-active" : ""} onClick={() => setSection(id)} type="button"><Icon size={17} />{label}<ArrowRight size={14} /></button>)}<div className="sidebar-note"><ShieldCheck size={16} /><span>Akun staf terlindungi. Tinjau setiap pengajuan sebelum dipublikasikan.</span></div></aside><div className="dashboard-content">
-    {!summary ? <div className="dashboard-wait"><span className="loader-orbit" /><span>Memuat data dashboard...</span></div> : section === "overview" ? <><div className="dashboard-welcome"><div><span className="eyebrow">RINGKASAN PLATFORM</span><h2>Aktivitas Rekap Baris</h2></div><span className="live-pill"><i /> DATA TERBARU</span></div><div className="metric-grid"><Metric label="Total akun" value={summary.users} icon={Users} /><Metric label="Menunggu verifikasi" value={summary.pendingUsers} icon={Clock3} tone="yellow" /><Metric label="Event terdaftar" value={summary.events} icon={CalendarDays} /><Metric label="Juri terdaftar" value={summary.judges} icon={Trophy} tone="yellow" /></div><div className="dashboard-panels"><div className="dashboard-panel"><div className="panel-heading"><div><span className="eyebrow">PERLU TINDAKAN</span><h3>Pengajuan terbaru</h3></div><button className="text-link" type="button" onClick={() => setSection("users")}>Lihat akun <ArrowRight size={14} /></button></div>{data.users.filter((item) => item.status === "PENDING").slice(0, 4).map((item) => <div className="mini-row" key={item.id}><span className="mini-avatar"><UserRound size={15} /></span><div><strong>{item.name}</strong><small>{item.role} · {item.email}</small></div><span className="pending-badge">Pending</span></div>)}{!data.users.some((item) => item.status === "PENDING") && <p className="empty-inline">Tidak ada akun yang menunggu verifikasi.</p>}</div><div className="dashboard-panel revenue-panel"><span className="eyebrow">PEMBAYARAN TERVERIFIKASI</span><strong>{rupiah(summary.revenue)}</strong><p>{summary.settledPayments} transaksi berhasil tercatat.</p><div className="revenue-decoration"><CreditCard size={27} /></div></div></div></> : section === "users" ? <><PanelTitle kicker="MANAJEMEN AKUN" title="Verifikasi pengguna" text="Aktifkan akun setelah nomor WhatsApp pengguna terverifikasi." /><div className="staff-table">{data.users.map((item) => <div className="staff-row" key={item.id}><div className="staff-person"><span className="mini-avatar"><UserRound size={15} /></span><div><strong>{item.name}</strong><small>{item.email} · {item.phone}</small></div></div><span className={`state-badge state-${item.status.toLowerCase()}`}>{item.status}</span><span className="role-label">{item.role}</span>{item.status === "PENDING" && !["ADMIN", "TEAM"].includes(item.role) ? <div className="row-actions"><button type="button" className="approve-button" disabled={!item.phoneVerifiedAt || busyId.includes(item.id)} onClick={() => onUserStatus(item.id, "ACTIVE")} title={!item.phoneVerifiedAt ? "Pengguna belum verifikasi OTP" : ""}><Check size={14} /> Terima</button><button type="button" className="reject-button" onClick={() => onUserStatus(item.id, "REJECTED")}><X size={14} /></button></div> : <span className="verified-hint">{item.phoneVerifiedAt ? "WA terverifikasi" : ""}</span>}</div>)}</div></> : section === "events" ? <><PanelTitle kicker="MANAJEMEN EVENT" title="Pusat verifikasi event" text="Terima event agar dapat tampil di halaman publik, voting, dan ticketing." />{data.events.map((event) => <div className="moderation-card" key={event.id}><div className="moderation-icon"><CalendarDays size={18} /></div><div className="moderation-copy"><span className={`state-badge state-${event.status.toLowerCase()}`}>{event.status}</span><h3>{event.name}</h3><p>{event.institution} · {event.organizer.name} · {event._count.registrations} peserta</p></div><div className="row-actions">{event.status === "PENDING" ? <><button className="approve-button" disabled={busyId.includes(event.id)} onClick={() => onEventStatus(event.id, "APPROVED")} type="button"><Check size={14} /> Terima</button><button className="reject-button" onClick={() => onEventStatus(event.id, "REJECTED")} type="button"><X size={14} /> Tolak</button></> : event.status === "APPROVED" ? <button className="reject-button" onClick={() => onEventStatus(event.id, "COMPLETED")} type="button">Tandai selesai</button> : null}</div></div>)}</> : section === "payments" ? <><PanelTitle kicker="REKAP TRANSAKSI" title="Voting & ticketing" text="Transaksi pembayaran yang diterima melalui Midtrans." />{data.payments.map((payment) => <div className="moderation-card payment-row" key={payment.id}><div className="moderation-icon"><CreditCard size={18} /></div><div className="moderation-copy"><span className={`state-badge state-${payment.status.toLowerCase()}`}>{payment.status}</span><h3>{payment.type} · {payment.event?.name || payment.product?.name || "Rekap Baris"}</h3><p>{payment.user.name} · {payment.orderId} · {new Date(payment.createdAt).toLocaleDateString("id-ID")}</p></div><strong>{rupiah(payment.amount)}</strong></div>)}</> : <><PanelTitle kicker="STOK & PRODUK" title="Merchandise resmi" text="Tambahkan produk baru ke toko. Stok diperbarui otomatis setelah transaksi." /><form className="product-form" onSubmit={onProductCreate}><label>Nama produk<input required minLength="2" maxLength="120" value={productForm.name} onChange={(event) => setProductForm({ ...productForm, name: event.target.value })} /></label><label>Harga (IDR)<input required type="number" min="1" value={productForm.price} onChange={(event) => setProductForm({ ...productForm, price: event.target.value })} /></label><label>Stok<input required type="number" min="0" value={productForm.stock} onChange={(event) => setProductForm({ ...productForm, stock: event.target.value })} /></label><label>URL gambar<input type="url" value={productForm.imageUrl} onChange={(event) => setProductForm({ ...productForm, imageUrl: event.target.value })} /></label><label className="form-wide">Deskripsi<input value={productForm.description} onChange={(event) => setProductForm({ ...productForm, description: event.target.value })} /></label><button className="button button-primary" disabled={busyId === "product-create"} type="submit">{busyId === "product-create" ? "Menyimpan..." : "Tambahkan produk"} <ArrowRight size={15} /></button></form><p className="dashboard-footnote"><ShieldCheck size={15} /> Produk ditampilkan setelah dibuat. Pengeditan katalog dapat dilakukan dari database/admin API.</p></>}</div></div></section>;
+
+  return <section className="section-wrap dashboard-page">
+    <div className="dashboard-heading">
+      <div><span className="eyebrow">RUANG KERJA / ADMINISTRASI</span><h1>Selamat datang,<br /><em>{user?.name || "Tim Rekap"}.</em></h1><p>Kelola akun, event, transaksi, dan aktivitas komunitas.</p></div>
+      <button className="button button-outline" type="button" onClick={onRefresh}><ArrowRight size={15} /> Muat ulang</button>
+    </div>
+    <div className="dashboard-layout">
+      <aside className="dashboard-sidebar">
+        {sections.map(({ id, label, icon: Icon }) => <button key={id} className={section === id ? "is-active" : ""} onClick={() => setSection(id)} type="button"><Icon size={17} />{label}<ArrowRight size={14} /></button>)}
+        <div className="sidebar-note"><ShieldCheck size={16} /><span>Akun staf terlindungi. Tinjau pengajuan sebelum dipublikasikan.</span></div>
+      </aside>
+      <div className="dashboard-content">
+        {!summary ? <div className="dashboard-wait"><span className="loader-orbit" /><span>Memuat data dashboard...</span></div> : section === "overview" ? <>
+          <div className="dashboard-welcome"><div><span className="eyebrow">RINGKASAN PLATFORM</span><h2>Aktivitas Rekap Baris</h2></div><span className="live-pill"><i /> DATA TERBARU</span></div>
+          <div className="metric-grid"><Metric label="Total akun" value={summary.users} icon={Users} /><Metric label="Menunggu verifikasi" value={summary.pendingUsers} icon={Clock3} tone="yellow" /><Metric label="Event terdaftar" value={summary.events} icon={CalendarDays} /><Metric label="Juri terdaftar" value={summary.judges} icon={Trophy} tone="yellow" /></div>
+          <div className="dashboard-panels">
+            <div className="dashboard-panel"><div className="panel-heading"><div><span className="eyebrow">PERLU TINDAKAN</span><h3>Pengajuan terbaru</h3></div><button className="text-link" type="button" onClick={() => setSection("users")}>Lihat akun <ArrowRight size={14} /></button></div>
+              {data.users.filter((item) => item.status === "PENDING").slice(0, 4).map((item) => <div className="mini-row" key={item.id}><span className="mini-avatar"><UserRound size={15} /></span><div><strong>{item.name}</strong><small>{item.role} · {item.email}</small></div><span className="pending-badge">Pending</span></div>)}
+              {!data.users.some((item) => item.status === "PENDING") && <p className="empty-inline">Tidak ada akun yang menunggu verifikasi.</p>}
+            </div>
+            <div className="dashboard-panel revenue-panel"><span className="eyebrow">PEMBAYARAN TERVERIFIKASI</span><strong>{rupiah(summary.revenue)}</strong><p>{summary.settledPayments} transaksi berhasil tercatat.</p><div className="revenue-decoration"><CreditCard size={27} /></div></div>
+          </div>
+        </> : section === "users" ? <>
+          <PanelTitle kicker="MANAJEMEN AKUN" title="Akun pengguna" text="Tinjau akun yang masuk dengan email Google terverifikasi." />
+          <div className="staff-table">{data.users.map((item) => <div className="staff-row" key={item.id}>
+            <div className="staff-person"><span className="mini-avatar"><UserRound size={15} /></span><div><strong>{item.name}</strong><small>{item.email}</small></div></div>
+            <span className={`state-badge state-${item.status.toLowerCase()}`}>{item.status}</span><span className="role-label">{item.role}</span>
+            {item.status === "PENDING" && !["ADMIN", "TEAM"].includes(item.role)
+              ? <div className="row-actions"><button type="button" className="approve-button" disabled={busyId.includes(item.id)} onClick={() => onUserStatus(item.id, "ACTIVE")}><Check size={14} /> Terima</button><button type="button" className="reject-button" onClick={() => onUserStatus(item.id, "REJECTED")}><X size={14} /></button></div>
+              : <span className="verified-hint">{item.googleId ? "Google terhubung" : ""}</span>}
+          </div>)}</div>
+        </> : section === "events" ? <>
+          <PanelTitle kicker="MANAJEMEN EVENT" title="Pusat verifikasi event" text="Terima event agar dapat tampil di halaman publik, voting, dan ticketing." />
+          {data.events.map((event) => <div className="moderation-card" key={event.id}><div className="moderation-icon"><CalendarDays size={18} /></div><div className="moderation-copy"><span className={`state-badge state-${event.status.toLowerCase()}`}>{event.status}</span><h3>{event.name}</h3><p>{event.institution} · {event.organizer.name} · {event._count.registrations} peserta</p></div><div className="row-actions">
+            {event.status === "PENDING" ? <><button className="approve-button" disabled={busyId.includes(event.id)} onClick={() => onEventStatus(event.id, "APPROVED")} type="button"><Check size={14} /> Terima</button><button className="reject-button" onClick={() => onEventStatus(event.id, "REJECTED")} type="button"><X size={14} /> Tolak</button></> : event.status === "APPROVED" ? <button className="reject-button" onClick={() => onEventStatus(event.id, "COMPLETED")} type="button">Tandai selesai</button> : null}
+          </div></div>)}
+        </> : section === "payments" ? <>
+          <PanelTitle kicker="REKAP TRANSAKSI" title="Voting & ticketing" text="Transaksi pembayaran yang diterima melalui Midtrans." />
+          {data.payments.map((payment) => <div className="moderation-card payment-row" key={payment.id}><div className="moderation-icon"><CreditCard size={18} /></div><div className="moderation-copy"><span className={`state-badge state-${payment.status.toLowerCase()}`}>{payment.status}</span><h3>{payment.type} · {payment.event?.name || payment.product?.name || "Rekap Baris"}</h3><p>{payment.user.name} · {payment.orderId} · {new Date(payment.createdAt).toLocaleDateString("id-ID")}</p></div><strong>{rupiah(payment.amount)}</strong></div>)}
+        </> : <>
+          <PanelTitle kicker="STOK & PRODUK" title="Merchandise resmi" text="Tambahkan produk baru ke toko. Stok diperbarui otomatis setelah transaksi." />
+          <form className="product-form" onSubmit={onProductCreate}>
+            <label>Nama produk<input required minLength="2" maxLength="120" value={productForm.name} onChange={(event) => setProductForm({ ...productForm, name: event.target.value })} /></label>
+            <label>Harga (IDR)<input required type="number" min="1" value={productForm.price} onChange={(event) => setProductForm({ ...productForm, price: event.target.value })} /></label>
+            <label>Stok<input required type="number" min="0" value={productForm.stock} onChange={(event) => setProductForm({ ...productForm, stock: event.target.value })} /></label>
+            <label>URL gambar<input type="url" value={productForm.imageUrl} onChange={(event) => setProductForm({ ...productForm, imageUrl: event.target.value })} /></label>
+            <label className="form-wide">Deskripsi<input value={productForm.description} onChange={(event) => setProductForm({ ...productForm, description: event.target.value })} /></label>
+            <button className="button button-primary" disabled={busyId === "product-create"} type="submit">Tambahkan produk <ArrowRight size={15} /></button>
+          </form>
+          <p className="dashboard-footnote"><ShieldCheck size={15} /> Produk ditampilkan setelah dibuat. Pengeditan katalog dapat dilakukan dari database/admin API.</p>
+        </>}
+      </div>
+    </div>
+  </section>;
 }
 
-function DashboardTools({ products = [], events = [], busyId, eventForm, setEventForm, onEventCreate, onProductUpdate, onPasswordChange }) {
-  const [passwordFields, setPasswordFields] = useState({ currentPassword: "", newPassword: "", confirmation: "" });
-  const [passwordBusy, setPasswordBusy] = useState(false);
-  const [passwordMessage, setPasswordMessage] = useState("");
-  const [passwordError, setPasswordError] = useState("");
+function DashboardTools({ products = [], events = [], busyId, eventForm, setEventForm, onEventCreate, onProductUpdate }) {
+  const [toolError, setToolError] = useState("");
   const [openEvent, setOpenEvent] = useState("");
   const [registrations, setRegistrations] = useState([]);
   const [rosterBusy, setRosterBusy] = useState(false);
 
   const loadRegistrations = async (event) => {
     setRosterBusy(true);
-    setPasswordError("");
+    setToolError("");
     try {
       const result = await api(`/admin/events/${event.id}/participants`);
       setOpenEvent(event.id);
       setRegistrations(result.registrations);
     } catch (requestError) {
-      setPasswordError(requestError.message);
+      setToolError(requestError.message);
     } finally {
       setRosterBusy(false);
     }
@@ -641,44 +642,14 @@ function DashboardTools({ products = [], events = [], busyId, eventForm, setEven
       const selectedEvent = events.find((event) => event.id === openEvent);
       if (selectedEvent) await loadRegistrations(selectedEvent);
     } catch (requestError) {
-      setPasswordError(requestError.message);
+      setToolError(requestError.message);
     } finally {
       setRosterBusy(false);
     }
   };
 
-  const submitPassword = async (event) => {
-    event.preventDefault();
-    setPasswordError("");
-    setPasswordMessage("");
-    if (passwordFields.newPassword !== passwordFields.confirmation) {
-      setPasswordError("Konfirmasi kata sandi baru tidak cocok.");
-      return;
-    }
-    setPasswordBusy(true);
-    try {
-      await onPasswordChange(passwordFields);
-      setPasswordMessage("Kata sandi berhasil diubah.");
-      setPasswordFields({ currentPassword: "", newPassword: "", confirmation: "" });
-    } catch (requestError) {
-      setPasswordError(requestError.message);
-    } finally {
-      setPasswordBusy(false);
-    }
-  };
-
   return <section className="section-wrap dashboard-tools">
-    <div className="dashboard-tool-card">
-      <PanelTitle kicker="KEAMANAN AKUN STAF" title="Ganti kata sandi" text="Perbarui kata sandi akun Admin/Tim Rekap setelah masuk." />
-      {passwordError && <div className="form-alert form-alert-error">{passwordError}</div>}
-      {passwordMessage && <div className="form-alert">{passwordMessage}</div>}
-      <form className="password-change-form" onSubmit={submitPassword}>
-        <label>Kata sandi saat ini<input type="password" autoComplete="current-password" minLength="1" required value={passwordFields.currentPassword} onChange={(event) => setPasswordFields({ ...passwordFields, currentPassword: event.target.value })} /></label>
-        <label>Kata sandi baru<input type="password" autoComplete="new-password" minLength="12" maxLength="128" required value={passwordFields.newPassword} onChange={(event) => setPasswordFields({ ...passwordFields, newPassword: event.target.value })} /></label>
-        <label>Konfirmasi kata sandi<input type="password" autoComplete="new-password" minLength="12" maxLength="128" required value={passwordFields.confirmation} onChange={(event) => setPasswordFields({ ...passwordFields, confirmation: event.target.value })} /></label>
-        <button className="button button-outline" disabled={passwordBusy} type="submit">{passwordBusy ? "Menyimpan..." : "Perbarui kata sandi"}</button>
-      </form>
-    </div>
+    {toolError && <div className="form-alert form-alert-error">{toolError}</div>}
     <div className="dashboard-tool-card">
       <PanelTitle kicker="PUSAT PUBLIKASI" title="Buat event baru" text="Lengkapi harga, jadwal, lokasi, dan poster. Event buatan Admin langsung aktif; pengajuan Tim menunggu persetujuan." />
       <form className="event-admin-form" onSubmit={onEventCreate}>
@@ -736,58 +707,6 @@ function EventModal({ event, loading, user, participantName, setParticipantName,
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [close]);
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}><section className="event-modal" role="dialog" aria-modal="true" aria-labelledby="event-modal-title"><button className="modal-close" onClick={close} type="button" aria-label="Tutup"><X size={19} /></button>{loading ? <div className="modal-loading"><span className="loader-orbit" /><p>Memuat detail event...</p></div> : <><div className="modal-cover"><span className="eyebrow">EVENT TERVERIFIKASI</span><span className="modal-cover-mark">RB</span></div><div className="modal-body"><span className="live-pill"><i /> {eventState(event)}</span><h2 id="event-modal-title">{event.name}</h2><p className="modal-institution">{event.institution}{event.location ? ` · ${event.location}` : ""}</p><div className="modal-meta"><span><CalendarDays size={15} />{formatDate(event.startsAt)}</span><span><Users size={15} />{event.participants?.length || event.participants || 0} peserta terverifikasi</span></div><p className="modal-description">{event.description || "Informasi event ini disediakan oleh penyelenggara Rekap Baris."}</p><div className="modal-tabs"><button className={activeMode === "overview" ? "is-active" : ""} type="button" onClick={() => setActiveMode("overview")}>Informasi</button><button className={activeMode === "participants" ? "is-active" : ""} type="button" onClick={() => setActiveMode("participants")}>Peserta & voting</button></div>{activeMode === "participants" ? <div className="participants-panel"><h3>Peserta Pasukan Terpopuler</h3>{event.participants?.length ? event.participants.map((participant, index) => <div className="participant-row" key={participant.id}><span className="participant-rank">{String(index + 1).padStart(2, "0")}</span><div><strong>{participant.name}</strong><small>{participant.teamName || "Peserta terverifikasi"}</small></div><span className="participant-votes"><Heart size={13} />{participant.votes} vote</span><button className="vote-button" onClick={() => onVote(participant.id)} disabled={busyId === participant.id} type="button">{busyId === participant.id ? "..." : <><Vote size={14} /> Vote</>}</button></div>) : <EmptyState icon={Vote} title="Peserta belum tersedia" text="Pendaftaran peserta akan muncul setelah diverifikasi." />}<button className="text-link" type="button" onClick={() => onReload()}>Perbarui daftar <ArrowRight size={14} /></button>{user && <div className="participant-register"><span className="eyebrow">DAFTARKAN PESERTA</span><input placeholder={`Nama peserta (default: ${user.name})`} value={participantName} onChange={(event) => setParticipantName(event.target.value)} /><input placeholder="Nama regu / pasukan" value={teamName} onChange={(event) => setTeamName(event.target.value)} /><button className="button button-outline" onClick={() => onRegister(event.id)} disabled={busyId === "participant-register"} type="button">Kirim pendaftaran</button></div>}</div> : <div className="event-purchase-box"><div><span className="eyebrow">TIKET PENONTON</span><strong>{event.ticketPrice ? rupiah(event.ticketPrice) : "Harga segera diumumkan"}</strong></div><label>Jumlah<select value={quantity} onChange={(event) => setQuantity(Number(event.target.value))}>{[1, 2, 3, 4, 5].map((value) => <option key={value}>{value}</option>)}</select></label><button className="button button-primary" type="button" onClick={() => event.ticketPrice > 0 ? onBuyTicket() : onMessage("Harga tiket belum tersedia untuk event ini.")}>{busyId === "ticket" ? "Menyiapkan QRIS..." : "Beli tiket dengan QRIS"} <ArrowRight size={15} /></button></div>}<p className="payment-footnote"><ShieldCheck size={14} /> Pembayaran aman via Midtrans QRIS. {user ? "" : <button type="button" onClick={onLogin}>Masuk untuk transaksi</button>}</p></div></>}</section></div>;
-}
-
-function AuthModal({ mode, setMode, close, form, update, submit, busy, notice, error, phone, resetToken, setResetToken }) {
-  useEffect(() => {
-    const closeOnEscape = (event) => { if (event.key === "Escape") close(); };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [close]);
-  const titles = {
-    register: ["Mulai baris yang baru.", "Buat akun Rekap Baris."],
-    login: ["Senang melihatmu lagi.", "Masuk tanpa kata sandi lewat WhatsApp."],
-    otp: ["Periksa WhatsApp-mu.", `Masukkan 6 angka yang dikirim ke ${phone}.`],
-    forgot: ["Pulihkan aksesmu.", "Tautan pengaturan ulang dikirim melalui email."],
-    reset: ["Atur kata sandi baru.", "Gunakan minimal 12 karakter yang kuat."]
-  };
-  const [title, subtitle] = titles[mode];
-  return <div className="modal-backdrop auth-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}><section className="auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-heading"><button className="modal-close" onClick={close} type="button" aria-label="Tutup"><X size={19} /></button><div className="auth-art"><div className="auth-brand"><img src="/logo.svg" alt="" /><span>rekap<span>baris</span></span></div><div className="auth-decoration">RB</div><div><span className="eyebrow">RUANG UNTUK SEMUA BARIS</span><h2>Yang penting,<br /><em>bergerak bersama.</em></h2><p>Satu platform untuk menyatukan energi di setiap event.</p></div><div className="auth-art-footer"><ShieldCheck size={15} /> Platform event yang lebih dekat</div></div><div className="auth-panel"><div className="auth-heading"><span className="eyebrow">REKAP BARIS / AKUN</span><h2 id="auth-heading">{title}</h2><p>{subtitle}</p></div>{(notice || error) && <div className={`form-alert ${error ? "form-alert-error" : ""}`}>{error || notice}</div>}<form className="auth-form" onSubmit={submit}>
-      {mode === "register" && <>
-        <label>Nama lengkap<input name="name" autoComplete="name" required minLength="2" maxLength="100" placeholder="Nama sesuai identitas" value={form.name} onChange={update} /></label>
-        <label>Email<input name="email" type="email" autoComplete="email" required placeholder="nama@email.com" value={form.email} onChange={update} /></label>
-        <label>Nomor WhatsApp<input name="phone" type="tel" autoComplete="tel" required placeholder="62812xxxxxxxx" value={form.phone} onChange={update} /></label>
-        <label>Kata sandi akun<input name="password" type="password" autoComplete="new-password" required minLength="12" placeholder="Minimal 12 karakter" value={form.password} onChange={update} /></label>
-        <span className="field-caption">Kata sandi dipakai untuk pemulihan akun. Login harian memakai OTP WhatsApp.</span>
-        <div className="role-picker"><span>Daftar sebagai</span><div>{roleOptions.map(({ id, label, icon: Icon }) => <button type="button" onClick={() => update({ target: { name: "role", value: id } })} className={form.role === id ? "is-active" : ""} key={id}><Icon size={17} />{label}</button>)}</div></div>
-        {form.role === "ORGANIZER" && <><label>Sekolah / institusi<input name="institution" required maxLength="120" placeholder="Nama institusi" value={form.institution} onChange={update} /></label><label>Nama event<input name="eventName" required maxLength="150" placeholder="Kompetisi yang akan diselenggarakan" value={form.eventName} onChange={update} /></label></>}
-        <div className="auth-security"><ShieldCheck size={16} /><span>Akun diverifikasi admin setelah OTP WhatsApp berhasil.</span></div>
-        <button className="button button-primary auth-submit" disabled={busy} type="submit">{busy ? "Mengirim OTP..." : "Daftar & kirim OTP"} <ArrowRight size={16} /></button>
-        <p className="auth-switch">Sudah memiliki akun? <button type="button" onClick={() => setMode("login")}>Masuk</button></p>
-      </>}
-      {mode === "login" && <>
-        <label>Nomor WhatsApp<input name="phone" autoComplete="tel" type="tel" required placeholder="62812xxxxxxxx" value={form.phone} onChange={update} /></label>
-        <div className="otp-explain"><div><LockKeyhole size={19} /></div><p>Kami kirim kode sekali pakai ke nomor WhatsApp terdaftar. Kata sandi tidak diperlukan.</p></div>
-        <button className="button button-primary auth-submit" disabled={busy} type="submit">{busy ? "Meminta OTP..." : "Kirim kode WhatsApp"} <ArrowRight size={16} /></button>
-        <p className="auth-switch"><button type="button" onClick={() => setMode("forgot")}>Lupa sandi?</button><span> · </span><button type="button" onClick={() => setMode("register")}>Buat akun baru</button></p>
-      </>}
-      {mode === "otp" && <>
-        <label>Kode OTP 6 digit<input name="code" inputMode="numeric" autoComplete="one-time-code" required pattern="[0-9]{6}" maxLength="6" placeholder="000000" value={form.code} onChange={update} /></label>
-        <button className="button button-primary auth-submit" disabled={busy} type="submit">{busy ? "Memverifikasi..." : "Verifikasi & masuk"} <ArrowRight size={16} /></button>
-        <p className="auth-switch"><button type="button" onClick={() => { update({ target: { name: "phone", value: phone } }); setMode("login"); }}>Gunakan nomor lain</button></p>
-      </>}
-      {mode === "forgot" && <>
-        <label>Email terdaftar<input name="email" autoComplete="email" type="email" required placeholder="nama@email.com" value={form.email} onChange={update} /></label>
-        <div className="otp-explain"><div><Mail size={19} /></div><p>Tautan reset aman berlaku selama 30 menit. Setelah reset, masuk kembali memakai OTP WhatsApp.</p></div>
-        <button className="button button-primary auth-submit" disabled={busy} type="submit">{busy ? "Mengirim tautan..." : "Kirim tautan reset"} <ArrowRight size={16} /></button>
-        <p className="auth-switch"><button type="button" onClick={() => setMode("login")}>Kembali ke masuk</button></p>
-      </>}
-      {mode === "reset" && <>
-        <label>Token reset<input required value={resetToken} onChange={(event) => setResetToken(event.target.value)} placeholder="Token dari tautan email" /></label>
-        <label>Kata sandi baru<input name="password" autoComplete="new-password" type="password" required minLength="12" placeholder="Minimal 12 karakter" value={form.password} onChange={update} /></label>
-        <button className="button button-primary auth-submit" disabled={busy} type="submit">{busy ? "Menyimpan..." : "Ubah kata sandi"} <ArrowRight size={16} /></button>
-      </>}
-    </form></div></section></div>;
 }
 
 function EmptyState({ icon: Icon, title, text }) {

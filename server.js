@@ -6,9 +6,9 @@ const express = require("express");
 const helmet = require("helmet");
 const cookieParser = require("cookie-parser");
 const rateLimit = require("express-rate-limit");
-const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const midtransClient = require("midtrans-client");
+const { OAuth2Client } = require("google-auth-library");
 const { PrismaClient } = require("@prisma/client");
 const { z } = require("zod");
 
@@ -17,8 +17,13 @@ const prisma = new PrismaClient();
 const port = Number(process.env.PORT || 3000);
 const production = process.env.NODE_ENV === "production";
 const cookieName = "rb_session";
+const oauthCookieName = "rb_google_oauth";
 const jwtSecret = process.env.JWT_SECRET || "";
-const phonePattern = /^\+?[1-9]\d{8,14}$/;
+const googleClientId = process.env.GOOGLE_CLIENT_ID || "";
+const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET || "";
+const appUrl = process.env.APP_URL || `http://localhost:${port}`;
+const googleCallbackUrl = process.env.GOOGLE_CALLBACK_URL || new URL("/api/auth/google/callback", appUrl).toString();
+const googleAuth = new OAuth2Client(googleClientId, googleClientSecret, googleCallbackUrl);
 
 if (jwtSecret.length < 32) {
   throw new Error("JWT_SECRET must contain at least 32 characters.");
@@ -82,16 +87,12 @@ function parse(schema, value) {
   return result.data;
 }
 
-function normalizePhone(phone) {
-  return phone.replace(/[^\d+]/g, "").replace(/^\+/, "");
-}
-
 function publicUser(user) {
   return {
     id: user.id,
     name: user.name,
     email: user.email,
-    phone: user.phone,
+    phone: user.phone || null,
     role: user.role,
     status: user.status
   };
@@ -137,71 +138,12 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-function otpHash(code) {
-  return crypto.createHmac("sha256", jwtSecret).update(code).digest("hex");
-}
-
-async function sendOtp(phone, code) {
-  const token = process.env.FONNTE_TOKEN;
-  if (!token) throw apiError(503, "Layanan OTP belum dikonfigurasi. Hubungi administrator.");
-  const body = new URLSearchParams({
-    target: phone,
-    message: `Kode verifikasi Rekap Baris Anda: ${code}. Berlaku 5 menit. Jangan bagikan kode ini kepada siapa pun.`,
-    countryCode: "62"
-  });
-  const response = await fetch("https://api.fonnte.com/send", {
-    method: "POST",
-    headers: { Authorization: token, "Content-Type": "application/x-www-form-urlencoded" },
-    body,
-    signal: AbortSignal.timeout(12000)
-  });
-  const result = await response.json().catch(() => null);
-  if (!response.ok || result?.status !== true) {
-    console.error("Fonnte delivery failed:", result?.reason || response.status);
-    throw apiError(502, "OTP WhatsApp tidak dapat dikirim. Periksa nomor atau coba lagi.");
-  }
-}
-
-async function createAndSendOtp(user) {
-  const recentChallenges = await prisma.otpChallenge.count({
-    where: { userId: user.id, createdAt: { gt: new Date(Date.now() - 15 * 60 * 1000) } }
-  });
-  if (recentChallenges >= 4) throw apiError(429, "Batas permintaan OTP tercapai. Coba lagi setelah 15 menit.");
-  const code = String(crypto.randomInt(100000, 1000000));
-  const now = new Date();
-  await prisma.otpChallenge.updateMany({
-    where: { userId: user.id, consumedAt: null },
-    data: { consumedAt: now }
-  });
-  await prisma.otpChallenge.create({
-    data: {
-      userId: user.id,
-      codeHash: otpHash(code),
-      expiresAt: new Date(Date.now() + 5 * 60 * 1000)
-    }
-  });
-  await sendOtp(user.phone, code);
-}
-
 async function requireMidtrans() {
   if (!process.env.MIDTRANS_SERVER_KEY || !process.env.MIDTRANS_CLIENT_KEY) {
     throw apiError(503, "Pembayaran belum dikonfigurasi. Silakan hubungi penyelenggara.");
   }
 }
 
-const registerSchema = z.object({
-  name: z.string().trim().min(2).max(100),
-  email: z.string().trim().email().max(254),
-  phone: z.string().trim().transform(normalizePhone).refine((value) => phonePattern.test(value), "Nomor WhatsApp tidak valid."),
-  password: z.string().min(12, "Kata sandi minimal 12 karakter.").max(128),
-  role: z.enum(["PARTICIPANT", "ORGANIZER", "JUDGE"]),
-  institution: z.string().trim().max(120).optional(),
-  eventName: z.string().trim().max(150).optional()
-});
-const phoneSchema = z.object({
-  phone: z.string().trim().transform(normalizePhone).refine((value) => phonePattern.test(value), "Nomor WhatsApp tidak valid.")
-});
-const otpSchema = phoneSchema.extend({ code: z.string().regex(/^\d{6}$/, "Kode OTP harus terdiri dari 6 angka.") });
 const eventSchema = z.object({
   name: z.string().trim().min(3).max(150),
   institution: z.string().trim().min(2).max(120),
@@ -221,75 +163,138 @@ app.get("/api/health", asyncRoute(async (req, res) => {
   res.json({ ok: true, service: "rekapbaris-api" });
 }));
 
-app.post("/api/auth/register", authLimiter, asyncRoute(async (req, res) => {
-  const input = parse(registerSchema, req.body);
+function authRedirect(result) {
+  const target = new URL("/", appUrl);
+  target.searchParams.set("auth", result);
+  return target.toString();
+}
+
+app.get("/api/auth/google", authLimiter, asyncRoute(async (req, res) => {
+  if (!googleClientId || !googleClientSecret) throw apiError(503, "Login Google belum dikonfigurasi.");
+  const input = parse(z.object({
+    role: z.enum(["PARTICIPANT", "ORGANIZER", "JUDGE"]).default("PARTICIPANT"),
+    institution: z.string().trim().max(120).optional(),
+    eventName: z.string().trim().max(150).optional()
+  }), req.query);
   if (input.role === "ORGANIZER" && (!input.institution || !input.eventName)) {
-    throw apiError(400, "Penyelenggara harus mengisi sekolah/institusi dan nama event.");
+    throw apiError(400, "Penyelenggara harus mengisi institusi dan nama event.");
   }
-  const passwordHash = await bcrypt.hash(input.password, 12);
-  let user;
+
+  const state = crypto.randomBytes(32).toString("hex");
+  const codeVerifier = crypto.randomBytes(48).toString("base64url");
+  const signedState = jwt.sign({
+    state,
+    codeVerifier,
+    role: input.role,
+    institution: input.institution,
+    eventName: input.eventName
+  }, jwtSecret, { expiresIn: "10m", issuer: "rekapbaris.com" });
+  res.cookie(oauthCookieName, signedState, {
+    httpOnly: true,
+    secure: production || process.env.COOKIE_SECURE === "true",
+    sameSite: "lax",
+    path: "/api/auth/google",
+    maxAge: 10 * 60 * 1000
+  });
+  const codeChallenge = crypto.createHash("sha256").update(codeVerifier).digest("base64url");
+  const authorizationUrl = googleAuth.generateAuthUrl({
+    access_type: "online",
+    prompt: "select_account",
+    scope: ["openid", "email", "profile"],
+    state,
+    code_challenge: codeChallenge,
+    code_challenge_method: "S256"
+  });
+  res.redirect(authorizationUrl);
+}));
+
+app.get("/api/auth/google/callback", authLimiter, asyncRoute(async (req, res) => {
+  const clearOauthCookie = () => res.clearCookie(oauthCookieName, {
+    httpOnly: true,
+    secure: production || process.env.COOKIE_SECURE === "true",
+    sameSite: "lax",
+    path: "/api/auth/google"
+  });
+  if (req.query.error) {
+    clearOauthCookie();
+    return res.redirect(authRedirect("cancelled"));
+  }
+  const code = z.string().min(1).safeParse(req.query.code);
+  const state = z.string().min(1).safeParse(req.query.state);
+  let oauthState;
   try {
-    user = await prisma.$transaction(async (tx) => {
-      const createdUser = await tx.user.create({
+    oauthState = jwt.verify(req.cookies[oauthCookieName] || "", jwtSecret, {
+      issuer: "rekapbaris.com",
+      algorithms: ["HS256"]
+    });
+  } catch {
+    clearOauthCookie();
+    return res.redirect(authRedirect("google_error"));
+  }
+  clearOauthCookie();
+  if (!code.success || !state.success || typeof oauthState !== "object" ||
+      typeof oauthState.state !== "string" ||
+      Buffer.byteLength(state.data) !== Buffer.byteLength(oauthState.state) ||
+      !crypto.timingSafeEqual(Buffer.from(state.data), Buffer.from(oauthState.state))) {
+    return res.redirect(authRedirect("google_error"));
+  }
+
+  try {
+    const { tokens } = await googleAuth.getToken({
+      code: code.data,
+      codeVerifier: oauthState.codeVerifier,
+      redirect_uri: googleCallbackUrl
+    });
+    if (!tokens.id_token) throw new Error("Google did not return an ID token.");
+    const ticket = await googleAuth.verifyIdToken({ idToken: tokens.id_token, audience: googleClientId });
+    const profile = ticket.getPayload();
+    if (!profile?.sub || !profile.email || profile.email_verified !== true) {
+      throw apiError(401, "Google account email must be verified.");
+    }
+
+    const user = await prisma.$transaction(async (tx) => {
+      let existing = await tx.user.findUnique({ where: { googleId: profile.sub } });
+      if (!existing) existing = await tx.user.findUnique({ where: { email: profile.email.toLowerCase() } });
+      if (existing?.googleId && existing.googleId !== profile.sub) {
+        throw apiError(409, "Email ini sudah terhubung ke akun Google lain.");
+      }
+      if (existing) {
+        return tx.user.update({
+          where: { id: existing.id },
+          data: { googleId: profile.sub, name: profile.name || existing.name }
+        });
+      }
+
+      const created = await tx.user.create({
         data: {
-          name: input.name,
-          email: input.email.toLowerCase(),
-          phone: input.phone,
-          passwordHash,
-          role: input.role
+          googleId: profile.sub,
+          name: profile.name || profile.email,
+          email: profile.email.toLowerCase(),
+          role: oauthState.role || "PARTICIPANT",
+          status: "PENDING"
         }
       });
-      if (input.role === "ORGANIZER") {
+      if (created.role === "ORGANIZER") {
         await tx.event.create({
           data: {
-            organizerId: createdUser.id,
-            name: input.eventName,
-            institution: input.institution
+            organizerId: created.id,
+            name: oauthState.eventName,
+            institution: oauthState.institution
           }
         });
       }
-      return createdUser;
+      return created;
     });
+
+    if (user.status !== "ACTIVE") {
+      return res.redirect(authRedirect(user.status === "REJECTED" ? "blocked" : "pending"));
+    }
+    signIn(res, user);
+    return res.redirect(authRedirect("success"));
   } catch (error) {
-    if (error.code === "P2002") throw apiError(409, "Email atau nomor WhatsApp sudah terdaftar.");
-    throw error;
+    console.error("Google OAuth failed:", error.message);
+    return res.redirect(authRedirect(error.status === 409 ? "account_conflict" : "google_error"));
   }
-  await createAndSendOtp(user);
-  res.status(201).json({ message: "Kode OTP dikirim ke WhatsApp. Akun menunggu verifikasi Admin/Tim Rekap." });
-}));
-
-app.post("/api/auth/otp/request", authLimiter, asyncRoute(async (req, res) => {
-  const input = parse(phoneSchema, req.body);
-  const user = await prisma.user.findUnique({ where: { phone: input.phone } });
-  if (user && (user.status === "ACTIVE" || (user.status === "PENDING" && !user.phoneVerifiedAt))) {
-    await createAndSendOtp(user);
-  }
-  res.json({ message: "Jika nomor terdaftar dan aktif, kode OTP akan dikirim melalui WhatsApp." });
-}));
-
-app.post("/api/auth/otp/verify", authLimiter, asyncRoute(async (req, res) => {
-  const input = parse(otpSchema, req.body);
-  const user = await prisma.user.findUnique({ where: { phone: input.phone } });
-  if (!user) throw apiError(400, "Nomor atau kode OTP tidak valid.");
-  const challenge = await prisma.otpChallenge.findFirst({
-    where: { userId: user.id, consumedAt: null, expiresAt: { gt: new Date() } },
-    orderBy: { createdAt: "desc" }
-  });
-  if (!challenge || challenge.attempts >= 5) throw apiError(400, "Kode OTP tidak valid atau sudah kedaluwarsa.");
-  const valid = crypto.timingSafeEqual(Buffer.from(challenge.codeHash), Buffer.from(otpHash(input.code)));
-  if (!valid) {
-    await prisma.otpChallenge.update({ where: { id: challenge.id }, data: { attempts: { increment: 1 } } });
-    throw apiError(400, "Kode OTP tidak valid atau sudah kedaluwarsa.");
-  }
-  await prisma.$transaction([
-    prisma.otpChallenge.update({ where: { id: challenge.id }, data: { consumedAt: new Date() } }),
-    prisma.user.update({ where: { id: user.id }, data: { phoneVerifiedAt: user.phoneVerifiedAt || new Date() } })
-  ]);
-  if (user.status !== "ACTIVE") {
-    return res.status(403).json({ error: "Nomor terverifikasi. Akun Anda masih menunggu verifikasi Admin/Tim Rekap." });
-  }
-  signIn(res, user);
-  res.json({ user: publicUser(user) });
 }));
 
 app.post("/api/auth/logout", (req, res) => {
@@ -298,68 +303,6 @@ app.post("/api/auth/logout", (req, res) => {
 });
 
 app.get("/api/auth/me", requireAuth, (req, res) => res.json({ user: publicUser(req.user) }));
-
-app.post("/api/auth/password", requireAuth, asyncRoute(async (req, res) => {
-  const input = parse(z.object({
-    currentPassword: z.string().min(1).max(128),
-    newPassword: z.string().min(12).max(128)
-  }), req.body);
-  const valid = await bcrypt.compare(input.currentPassword, req.user.passwordHash);
-  if (!valid) throw apiError(400, "Kata sandi saat ini tidak sesuai.");
-  const passwordHash = await bcrypt.hash(input.newPassword, 12);
-  await prisma.user.update({ where: { id: req.user.id }, data: { passwordHash } });
-  res.json({ message: "Kata sandi berhasil diperbarui." });
-}));
-
-app.post("/api/auth/forgot-password", authLimiter, asyncRoute(async (req, res) => {
-  const input = parse(z.object({ email: z.string().trim().email().max(254) }), req.body);
-  const user = await prisma.user.findUnique({ where: { email: input.email.toLowerCase() } });
-  if (!user) return res.json({ message: "Jika email terdaftar, tautan pemulihan akan dikirim." });
-  const { RESEND_API_KEY, EMAIL_FROM, APP_URL } = process.env;
-  if (!RESEND_API_KEY || !EMAIL_FROM || !APP_URL) {
-    throw apiError(503, "Pemulihan email belum dikonfigurasi. Hubungi administrator.");
-  }
-  const rawToken = crypto.randomBytes(32).toString("hex");
-  await prisma.passwordResetToken.create({
-    data: {
-      userId: user.id,
-      tokenHash: crypto.createHash("sha256").update(rawToken).digest("hex"),
-      expiresAt: new Date(Date.now() + 30 * 60 * 1000)
-    }
-  });
-  const link = new URL(`/reset-password?token=${rawToken}`, APP_URL).toString();
-  const emailResponse = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${RESEND_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      from: EMAIL_FROM,
-      to: [user.email],
-      subject: "Pemulihan kata sandi Rekap Baris",
-      text: `Gunakan tautan berikut dalam 30 menit untuk mengatur ulang kata sandi: ${link}`
-    }),
-    signal: AbortSignal.timeout(12000)
-  });
-  if (!emailResponse.ok) {
-    console.error("Password reset email delivery failed:", emailResponse.status);
-    throw apiError(502, "Email pemulihan tidak dapat dikirim saat ini. Silakan coba lagi.");
-  }
-  res.json({ message: "Jika email terdaftar, tautan pemulihan akan dikirim." });
-}));
-
-app.post("/api/auth/reset-password", authLimiter, asyncRoute(async (req, res) => {
-  const input = parse(z.object({
-    token: z.string().min(32).max(200),
-    password: z.string().min(12).max(128)
-  }), req.body);
-  const tokenHash = crypto.createHash("sha256").update(input.token).digest("hex");
-  const record = await prisma.passwordResetToken.findUnique({ where: { tokenHash } });
-  if (!record || record.usedAt || record.expiresAt <= new Date()) throw apiError(400, "Tautan pemulihan tidak valid atau sudah kedaluwarsa.");
-  await prisma.$transaction([
-    prisma.user.update({ where: { id: record.userId }, data: { passwordHash: await bcrypt.hash(input.password, 12) } }),
-    prisma.passwordResetToken.update({ where: { id: record.id }, data: { usedAt: new Date() } })
-  ]);
-  res.json({ message: "Kata sandi berhasil diubah. Silakan masuk menggunakan OTP WhatsApp." });
-}));
 
 app.get("/api/events", publicLimiter, asyncRoute(async (req, res) => {
   const events = await prisma.event.findMany({
@@ -533,7 +476,11 @@ async function createPayment(req, res, type) {
   try {
     const transaction = await midtrans.createTransaction({
       transaction_details: { order_id: orderId, gross_amount: amount },
-      customer_details: { first_name: req.user.name, email: req.user.email, phone: req.user.phone },
+      customer_details: {
+        first_name: req.user.name,
+        email: req.user.email,
+        ...(req.user.phone ? { phone: req.user.phone } : {})
+      },
       item_details: [{
         id: type === "MERCH" ? product.id : (event?.id || type.toLowerCase()),
         price: unitPrice,
@@ -641,7 +588,7 @@ app.get("/api/admin/users", requireAuth, requireStaff, asyncRoute(async (req, re
     where: status ? { status } : {},
     orderBy: { createdAt: "desc" },
     take: 100,
-    select: { id: true, name: true, email: true, phone: true, role: true, status: true, phoneVerifiedAt: true, createdAt: true }
+    select: { id: true, name: true, email: true, googleId: true, phone: true, role: true, status: true, createdAt: true }
   });
   res.json({ users });
 }));
@@ -650,7 +597,6 @@ app.patch("/api/admin/users/:id/status", requireAuth, requireStaff, asyncRoute(a
   const input = parse(z.object({ status: z.enum(["ACTIVE", "REJECTED"]) }), req.body);
   const target = await prisma.user.findUnique({ where: { id: req.params.id } });
   if (!target || ["ADMIN", "TEAM"].includes(target.role)) throw apiError(404, "Akun tidak ditemukan.");
-  if (input.status === "ACTIVE" && !target.phoneVerifiedAt) throw apiError(400, "Akun harus menyelesaikan OTP WhatsApp sebelum diverifikasi.");
   const user = await prisma.user.update({ where: { id: target.id }, data: { status: input.status } });
   res.json({ user: publicUser(user) });
 }));
@@ -743,6 +689,9 @@ app.patch("/api/admin/products/:id", requireAuth, requireStaff, asyncRoute(async
 app.use("/api", (req, res) => res.status(404).json({ error: "API tidak ditemukan." }));
 
 const distPath = path.join(__dirname, "dist");
+const uploadPath = path.resolve(process.env.UPLOAD_DIR || path.join(__dirname, "uploads"));
+app.use("/uploads", express.static(uploadPath, { dotfiles: "deny", index: false, maxAge: production ? "1h" : 0 }));
+app.use(express.static(path.join(__dirname, "public"), { index: false, maxAge: production ? "1h" : 0 }));
 app.use(express.static(distPath, { index: false, maxAge: production ? "1h" : 0 }));
 app.get("*", (req, res, next) => {
   if (req.path.startsWith("/api/")) return next();
