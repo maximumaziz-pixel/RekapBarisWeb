@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { X } from "lucide-react";
 
-const adminPhone = (import.meta.env.VITE_ADMIN_WHATSAPP || "").replace(/\D/g, "");
+const configuredPhone = (import.meta.env.VITE_ADMIN_WHATSAPP || "").replace(/\D/g, "");
+const adminPhone = /^\d{8,15}$/.test(configuredPhone) ? configuredPhone : "";
 
 export default function WhatsAppFloat() {
   const [open, setOpen] = useState(false);

@@ -5,7 +5,7 @@
   "description": "Platform manajemen event, voting, dan ticketing Rekap Baris",
   "main": "server.js",
   "engines": {
-    "node": ">=18.18 <25"
+    "node": ">=20 <25"
   },
   "scripts": {
     "dev": "concurrently -k \"npm:dev:server\" \"npm:dev:client\"",
@@ -13,12 +13,13 @@
     "dev:client": "vite",
     "build": "vite build",
     "start": "node server.js",
+    "test:auth": "node --test tests/auth-password.test.js tests/phone-whatsapp.test.js",
     "db:generate": "prisma generate",
     "db:deploy": "prisma db push",
     "db:seed": "prisma db seed",
     "db:setup": "npm run db:generate && npm run db:deploy && npm run db:seed",
     "db:validate": "prisma validate",
-    "check": "node --check server.js && node --check prisma/seed.js && node --check ecosystem.config.js && node --check tailwind.config.js && node --check postcss.config.js"
+    "check": "node --check server.js && node --check auth-password.js && node --check phone.js && node --check whatsapp.js && node --check prisma/seed.js && node --check ecosystem.config.js && node --check tailwind.config.js && node --check postcss.config.js"
   },
   "prisma": {
     "seed": "node prisma/seed.js"
@@ -46,6 +47,6 @@
     "postcss": "^8.5.31",
     "prisma": "6.19.0",
     "tailwindcss": "^3.4.17",
-    "vite": "5.4.14"
+    "vite": "^5.4.21"
   }
 }

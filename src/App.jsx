@@ -55,6 +55,7 @@ function App() {
   const [activeTab, setActiveTab] = useState("home");
   const [user, setUser] = useState(null);
   const [authMode, setAuthMode] = useState("");
+  const [resetToken, setResetToken] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [events, setEvents] = useState([]);
@@ -72,6 +73,7 @@ function App() {
   const [dashboard, setDashboard] = useState(null);
   const [staffData, setStaffData] = useState({ users: [], events: [], payments: [] });
   const [staffSection, setStaffSection] = useState("overview");
+  const [memberDashboard, setMemberDashboard] = useState(null);
   const [productForm, setProductForm] = useState({ name: "", description: "", imageUrl: "", price: "", stock: "" });
   const [eventForm, setEventForm] = useState({ name: "", institution: "", description: "", posterUrl: "", startsAt: "", endsAt: "", location: "", ticketPrice: "0", votePrice: "1000" });
 
@@ -83,20 +85,29 @@ function App() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const result = params.get("auth");
+    const token = params.get("resetToken");
+    if (token) {
+      setResetToken(token);
+      setAuthMode("reset-password");
+      window.history.replaceState({}, "", `${window.location.pathname}${window.location.hash}`);
+      return;
+    }
     const messages = {
       success: "Berhasil masuk dengan Google. Selamat datang!",
       pending: "Akun Anda masih menunggu persetujuan tim Rekap Baris.",
       blocked: "Akun ini tidak dapat digunakan. Hubungi administrator.",
       cancelled: "Login Google dibatalkan.",
       account_conflict: "Email ini sudah terhubung ke akun Google lain.",
-      google_error: "Login Google gagal. Silakan coba kembali."
+      not_registered: "Akun belum terdaftar. Daftar terlebih dahulu dengan email dan password.",
+      google_error: "Login Google gagal. Periksa konfigurasi OAuth atau masuk dengan email dan password."
     };
     if (!result) return;
-    if (result === "google_error" || result === "account_conflict") {
+    if (result === "google_error" || result === "account_conflict" || result === "not_registered") {
       setError(messages[result]);
       setAuthMode("login");
     } else {
       setNotice(messages[result] || "Status login Google diperbarui.");
+      if (result === "success") setActiveTab("dashboard");
     }
     window.history.replaceState({}, "", `${window.location.pathname}${window.location.hash}`);
   }, []);
@@ -141,6 +152,11 @@ function App() {
     if (user && ["ADMIN", "TEAM"].includes(user.role)) refreshDashboard();
   }, [user, refreshDashboard]);
 
+  useEffect(() => {
+    if (!user || ["ADMIN", "TEAM"].includes(user.role)) return;
+    api("/dashboard").then(setMemberDashboard).catch((requestError) => setError(requestError.message));
+  }, [user]);
+
   const openTab = async (tab) => {
     if (tab === activeTab) return;
     setTransitioning(true);
@@ -158,11 +174,37 @@ function App() {
     setAuthMode(mode);
   };
 
+  const authenticateWithPassword = async (mode, credentials) => {
+    setError("");
+    const endpoint = {
+      login: "/auth/login",
+      register: "/auth/register",
+      "forgot-password": "/auth/forgot-password",
+      "reset-password": "/auth/reset-password"
+    }[mode];
+    if (!endpoint) throw new Error("Jenis autentikasi tidak dikenal.");
+    const result = await api(endpoint, {
+      method: "POST",
+      body: JSON.stringify(credentials)
+    });
+    setAuthMode("");
+    setNotice(mode === "register"
+      ? "Pendaftaran berhasil. Akun menunggu persetujuan Admin/Tim Rekap."
+      : mode === "login" ? "Berhasil masuk. Selamat datang!" : result.message);
+    if (mode === "reset-password") setResetToken("");
+    if (result.user) {
+      setUser(result.user);
+      if (mode === "login") setActiveTab("dashboard");
+    }
+  };
+
   const logout = async () => {
     try {
       await api("/auth/logout", { method: "POST" });
       setUser(null);
       setDashboard(null);
+      setMemberDashboard(null);
+      setActiveTab("home");
       setNotice("Anda sudah keluar.");
     } catch (requestError) {
       setError(requestError.message);
@@ -186,7 +228,7 @@ function App() {
     if (!user) {
       setSelectedEvent(null);
       startAuth("login");
-      setError("Masuk dengan Google untuk melanjutkan.");
+      setError("Masuk untuk melanjutkan.");
       return;
     }
     setBusyId(busyKey);
@@ -328,6 +370,11 @@ function App() {
               <LayoutDashboard size={16} /> Dashboard
             </button>
           )}
+          {user && !["ADMIN", "TEAM"].includes(user.role) && (
+            <button className={`nav-link ${activeTab === "dashboard" ? "is-active" : ""}`} type="button" onClick={() => openTab("dashboard")}>
+              <LayoutDashboard size={16} /> Dashboard
+            </button>
+          )}
         </nav>
         <div className="top-actions">
           <button className="icon-button theme-toggle" type="button" onClick={() => setTheme(theme === "light" ? "dark" : "light")} aria-label="Ganti tema">
@@ -337,6 +384,7 @@ function App() {
             <div className="user-menu">
               <span className="user-avatar"><UserRound size={16} /></span>
               <span className="user-name">{user.name.split(" ")[0]}</span>
+              <button className="button button-quiet button-small" onClick={() => openTab("dashboard")} type="button">Dashboard</button>
               <button className="button button-outline button-small" onClick={logout} type="button">Keluar</button>
             </div>
           ) : (
@@ -354,6 +402,7 @@ function App() {
             <Icon size={19} /><span>{label}</span>
           </button>
         ))}
+        {user && <button className={`mobile-nav-link ${activeTab === "dashboard" ? "is-active" : ""}`} onClick={() => openTab("dashboard")} type="button"><LayoutDashboard size={19} /><span>Akun</span></button>}
       </nav>
 
       {(error || notice) && (
@@ -386,7 +435,7 @@ function App() {
               <MerchPage products={products} loading={loading} user={user} busyId={busyId} onBuy={(product) => pay("merch", { productId: product.id, quantity: 1 }, product.id)} />
             )}
             {activeTab === "about" && <AboutPage onJoin={() => startAuth("register")} />}
-            {activeTab === "dashboard" && <><DashboardPage
+            {activeTab === "dashboard" && user && ["ADMIN", "TEAM"].includes(user.role) && <><DashboardPage
               user={user}
               summary={dashboard}
               data={staffData}
@@ -400,6 +449,7 @@ function App() {
               onEventStatus={(id, status) => changeStatus(`/admin/events/${id}/status`, status)}
               onRefresh={refreshDashboard}
             /><DashboardTools products={staffData.products} events={staffData.events} busyId={busyId} eventForm={eventForm} setEventForm={setEventForm} onEventCreate={createEvent} onProductUpdate={updateProduct} /></>}
+            {activeTab === "dashboard" && user && !["ADMIN", "TEAM"].includes(user.role) && <MemberDashboard user={user} data={memberDashboard} />}
           </>
         )}
       </main>
@@ -413,6 +463,8 @@ function App() {
         setMode={startAuth}
         close={() => { setAuthMode(""); setError(""); }}
         error={error}
+        resetToken={resetToken}
+        onCredentialAuth={authenticateWithPassword}
       />}
 
       {selectedEvent && <EventModal
@@ -551,6 +603,57 @@ function AboutPage({ onJoin }) {
   return <section className="section-wrap about-page"><div className="about-cover"><span className="eyebrow">RUANG UNTUK SEMUA BARIS</span><h1>Teknologi yang<br /><em>menyatukan gerakan.</em></h1><p>Rekap Baris adalah platform digital untuk membuat pengelolaan event, kompetisi, dukungan komunitas, dan ticketing lebih sederhana.</p><button className="button button-primary button-large" onClick={onJoin} type="button">Bertumbuh bersama <ArrowRight size={16} /></button><div className="about-orbit">RB</div></div><div className="about-values"><div><span>01 / KONEKSI</span><h3>Satu ruang untuk seluruh ekosistem event.</h3><p>Penyelenggara, peserta, juri, dan penonton dapat terhubung lewat pengalaman yang konsisten.</p></div><div><span>02 / TRANSPARANSI</span><h3>Proses yang jelas, data yang tertata.</h3><p>Moderasi event dan akun menjaga ruang publik tetap terpercaya dan nyaman digunakan.</p></div><div><span>03 / KEBERSAMAAN</span><h3>Semangat komunitas tetap menjadi pusatnya.</h3><p>Teknologi hadir untuk mendukung momen kebersamaan, bukan menggantikannya.</p></div></div></section>;
 }
 
+function MemberDashboard({ user, data }) {
+  const roleNames = {
+    PARTICIPANT: "Dashboard Peserta",
+    ORGANIZER: "Dashboard Penyelenggara",
+    JUDGE: "Dashboard Juri"
+  };
+  if (!data) return <section className="section-wrap dashboard-page"><div className="dashboard-wait"><span className="loader-orbit" /><span>Memuat dashboard...</span></div></section>;
+
+  return <section className="section-wrap dashboard-page">
+    <div className="dashboard-heading">
+      <div><span className="eyebrow">DASHBOARD / {user.role}</span><h1>{roleNames[user.role]}</h1><p>Selamat datang, {user.name}. Status akun: {user.status}.</p></div>
+    </div>
+    <div className="member-dashboard">
+      <article className="dashboard-panel">
+        <span className="eyebrow">PROFIL AKUN</span>
+        <h2>{user.name}</h2>
+        <p>{user.email}</p>
+        {user.phone && <p>{user.phone}</p>}
+        {user.institution && <p>Asal satuan: {user.institution}</p>}
+      </article>
+      {user.role === "PARTICIPANT" && <>
+        <article className="dashboard-panel">
+          <span className="eyebrow">PENDAFTARAN EVENT</span>
+          <h2>{data.registrations.length} pendaftaran</h2>
+          {data.registrations.map((item) => <div className="member-dashboard-row" key={item.id}><strong>{item.event.name}</strong><span>{item.status}</span><small>{item.participantName}{item.teamName ? ` · ${item.teamName}` : ""}</small></div>)}
+          {!data.registrations.length && <p className="empty-inline">Belum ada pendaftaran event melalui akun ini.</p>}
+        </article>
+        <article className="dashboard-panel">
+          <span className="eyebrow">PEMBAYARAN</span>
+          <h2>{data.payments.length} transaksi terbaru</h2>
+          {data.payments.map((payment) => <div className="member-dashboard-row" key={payment.id}><strong>{payment.event?.name || payment.product?.name || payment.type}</strong><span>{payment.status}</span><small>{rupiah(payment.amount)} · {new Date(payment.createdAt).toLocaleDateString("id-ID")}</small></div>)}
+          {!data.payments.length && <p className="empty-inline">Belum ada transaksi.</p>}
+        </article>
+      </>}
+      {user.role === "ORGANIZER" && <article className="dashboard-panel">
+        <span className="eyebrow">EVENT SAYA</span>
+        <h2>{data.events.length} event</h2>
+        {data.events.map((event) => <div className="member-dashboard-row" key={event.id}><strong>{event.name}</strong><span>{event.status}</span><small>{event.institution} · {event._count.registrations} pendaftar</small></div>)}
+        {!data.events.length && <p className="empty-inline">Belum ada event di akun ini. Hubungi Tim Rekap untuk mengajukan event.</p>}
+      </article>}
+      {user.role === "JUDGE" && <article className="dashboard-panel">
+        <span className="eyebrow">EVENT DI SATUAN ANDA</span>
+        <h2>{data.events.length} event tersedia</h2>
+        <p>{user.institution ? `Daftar ini menampilkan event yang disetujui pada asal satuan ${user.institution}.` : "Daftar event yang telah disetujui."} Penugasan juri dikelola terpisah oleh Tim Rekap.</p>
+        {data.events.map((event) => <div className="member-dashboard-row" key={event.id}><strong>{event.name}</strong><span>{event.startsAt ? formatDate(event.startsAt) : "Jadwal segera diumumkan"}</span><small>{event.institution}</small></div>)}
+        {!data.events.length && <p className="empty-inline">Belum ada event tersedia untuk asal satuan ini.</p>}
+      </article>}
+    </div>
+  </section>;
+}
+
 function DashboardPage({ user, summary, data, section, setSection, busyId, productForm, setProductForm, onProductCreate, onUserStatus, onEventStatus, onRefresh }) {
   const sections = [
     { id: "overview", label: "Ringkasan", icon: LayoutDashboard },
@@ -562,7 +665,7 @@ function DashboardPage({ user, summary, data, section, setSection, busyId, produ
 
   return <section className="section-wrap dashboard-page">
     <div className="dashboard-heading">
-      <div><span className="eyebrow">RUANG KERJA / ADMINISTRASI</span><h1>Selamat datang,<br /><em>{user?.name || "Tim Rekap"}.</em></h1><p>Kelola akun, event, transaksi, dan aktivitas komunitas.</p></div>
+      <div><span className="eyebrow">RUANG KERJA / {user?.role === "ADMIN" ? "ADMIN" : "TIM REKAP"}</span><h1>Selamat datang,<br /><em>{user?.name || "Tim Rekap"}.</em></h1><p>{user?.role === "ADMIN" ? "Dashboard Admin: akses data dan moderasi seluruh role." : "Dashboard Tim Rekap: tinjau dan kelola data seluruh role."}</p></div>
       <button className="button button-outline" type="button" onClick={onRefresh}><ArrowRight size={15} /> Muat ulang</button>
     </div>
     <div className="dashboard-layout">
@@ -582,9 +685,9 @@ function DashboardPage({ user, summary, data, section, setSection, busyId, produ
             <div className="dashboard-panel revenue-panel"><span className="eyebrow">PEMBAYARAN TERVERIFIKASI</span><strong>{rupiah(summary.revenue)}</strong><p>{summary.settledPayments} transaksi berhasil tercatat.</p><div className="revenue-decoration"><CreditCard size={27} /></div></div>
           </div>
         </> : section === "users" ? <>
-          <PanelTitle kicker="MANAJEMEN AKUN" title="Akun pengguna" text="Tinjau akun yang masuk dengan email Google terverifikasi." />
+          <PanelTitle kicker="MANAJEMEN AKUN" title="Akun pengguna" text="Tinjau data dan persetujuan pendaftaran peserta, penyelenggara, serta juri." />
           <div className="staff-table">{data.users.map((item) => <div className="staff-row" key={item.id}>
-            <div className="staff-person"><span className="mini-avatar"><UserRound size={15} /></span><div><strong>{item.name}</strong><small>{item.email}</small></div></div>
+            <div className="staff-person"><span className="mini-avatar"><UserRound size={15} /></span><div><strong>{item.name}</strong><small>{[item.email, item.phone, item.institution, item.eventName].filter(Boolean).join(" · ")}</small></div></div>
             <span className={`state-badge state-${item.status.toLowerCase()}`}>{item.status}</span><span className="role-label">{item.role}</span>
             {item.status === "PENDING" && !["ADMIN", "TEAM"].includes(item.role)
               ? <div className="row-actions"><button type="button" className="approve-button" disabled={busyId.includes(item.id)} onClick={() => onUserStatus(item.id, "ACTIVE")}><Check size={14} /> Terima</button><button type="button" className="reject-button" onClick={() => onUserStatus(item.id, "REJECTED")}><X size={14} /></button></div>

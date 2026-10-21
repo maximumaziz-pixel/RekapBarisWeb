@@ -11,6 +11,9 @@ const midtransClient = require("midtrans-client");
 const { OAuth2Client } = require("google-auth-library");
 const { PrismaClient } = require("@prisma/client");
 const { z } = require("zod");
+const { hashPassword, isStrongPassword, verifyPassword } = require("./auth-password");
+const { normalizePhone, phoneLookupCandidates, whatsappRecipient } = require("./phone");
+const { getFonnteConfig, sendPasswordResetWhatsApp } = require("./whatsapp");
 
 const app = express();
 const prisma = new PrismaClient();
@@ -93,13 +96,15 @@ function publicUser(user) {
     name: user.name,
     email: user.email,
     phone: user.phone || null,
+    institution: user.institution || null,
+    eventName: user.eventName || null,
     role: user.role,
     status: user.status
   };
 }
 
 function signIn(res, user) {
-  const token = jwt.sign({ sub: user.id }, jwtSecret, { expiresIn: "7d", issuer: "rekapbaris.com" });
+  const token = jwt.sign({ sub: user.id, ver: user.authVersion }, jwtSecret, { expiresIn: "7d", issuer: "rekapbaris.com" });
   res.cookie(cookieName, token, {
     httpOnly: true,
     secure: production || process.env.COOKIE_SECURE === "true",
@@ -115,7 +120,7 @@ async function requireAuth(req, res, next) {
     if (!token) throw apiError(401, "Silakan masuk terlebih dahulu.");
     const payload = jwt.verify(token, jwtSecret, { issuer: "rekapbaris.com" });
     const user = await prisma.user.findUnique({ where: { id: payload.sub } });
-    if (!user || user.status !== "ACTIVE") {
+    if (!user || user.status !== "ACTIVE" || payload.ver !== user.authVersion) {
       res.clearCookie(cookieName, { path: "/" });
       throw apiError(401, "Akun belum aktif atau sudah tidak tersedia.");
     }
@@ -137,6 +142,10 @@ function requireAdmin(req, res, next) {
   if (req.user?.role !== "ADMIN") return next(apiError(403, "Akses khusus Admin."));
   next();
 }
+
+const passwordSchema = z.string().refine(isStrongPassword, {
+  message: "Password minimal 8 karakter dan harus mengandung huruf, angka, serta simbol."
+});
 
 async function requireMidtrans() {
   if (!process.env.MIDTRANS_SERVER_KEY || !process.env.MIDTRANS_CLIENT_KEY) {
@@ -169,6 +178,171 @@ function authRedirect(result) {
   return target.toString();
 }
 
+const passwordAccountSchema = z.object({
+  name: z.string().trim().min(2).max(120),
+  email: z.string().trim().email().max(254).transform((email) => email.toLowerCase()),
+  password: passwordSchema,
+  role: z.enum(["PARTICIPANT", "ORGANIZER", "JUDGE"]).default("PARTICIPANT"),
+  phone: z.string().trim().min(8).max(30).refine((value) => Boolean(normalizePhone(value)), "Masukkan nomor HP yang valid."),
+  institution: z.string().trim().max(120).optional(),
+  eventName: z.string().trim().max(150).optional()
+}).refine((input) => input.role === "JUDGE" || input.institution, {
+  message: "Peserta dan penyelenggara harus mengisi asal satuan."
+}).refine((input) => input.role !== "ORGANIZER" || input.eventName, {
+  message: "Penyelenggara harus mengisi nama event."
+});
+
+app.post("/api/auth/register", authLimiter, asyncRoute(async (req, res) => {
+  const input = parse(passwordAccountSchema, req.body);
+  const existing = await prisma.user.findUnique({ where: { email: input.email } });
+  if (existing) throw apiError(409, "Email sudah terdaftar. Silakan masuk atau gunakan Google.");
+
+  try {
+    const passwordHash = await hashPassword(input.password);
+    await prisma.$transaction(async (tx) => {
+      const created = await tx.user.create({
+        data: {
+          name: input.name,
+          email: input.email,
+          phone: normalizePhone(input.phone),
+          passwordHash,
+          role: input.role,
+          status: "PENDING",
+          institution: input.role !== "JUDGE" ? input.institution : undefined,
+          eventName: input.role === "ORGANIZER" ? input.eventName : undefined
+        }
+      });
+      if (created.role === "ORGANIZER") {
+        await tx.event.create({
+          data: {
+            organizerId: created.id,
+            name: input.eventName,
+            institution: input.institution
+          }
+        });
+      }
+    });
+    res.status(201).json({ status: "pending", message: "Akun Anda menunggu persetujuan Admin/Tim Rekap." });
+  } catch (error) {
+    if (error.code === "P2002") {
+      const target = error.meta?.target;
+      throw apiError(409, Array.isArray(target) && target.includes("phone")
+        ? "Nomor telepon sudah digunakan oleh akun lain."
+        : "Email sudah terdaftar. Silakan masuk atau gunakan Google.");
+    }
+    throw error;
+  }
+}));
+
+app.post("/api/auth/login", authLimiter, asyncRoute(async (req, res) => {
+  const input = parse(z.object({
+    identifier: z.string().trim().min(1).max(254),
+    password: z.string().min(1).max(128)
+  }), req.body);
+
+  const identifier = input.identifier.toLowerCase();
+  let user;
+  if (identifier.includes("@")) {
+    user = await prisma.user.findUnique({ where: { email: identifier } });
+  } else {
+    const phone = normalizePhone(input.identifier);
+    if (phone) {
+      user = await prisma.user.findFirst({ where: { phone: { in: phoneLookupCandidates(input.identifier) } } });
+    }
+    if (!user) {
+      const staffAccount = [
+        { name: process.env.ADMIN_NAME, email: process.env.ADMIN_EMAIL, role: "ADMIN" },
+        { name: process.env.TEAM_NAME, email: process.env.TEAM_EMAIL, role: "TEAM" }
+      ].find((account) => account.name && account.email && account.name.trim().toLowerCase() === identifier);
+      if (staffAccount) {
+        user = await prisma.user.findFirst({
+          where: { email: staffAccount.email.toLowerCase(), role: staffAccount.role }
+        });
+      }
+    }
+  }
+  let passwordMatches = false;
+  if (user?.passwordHash) passwordMatches = await verifyPassword(input.password, user.passwordHash);
+  else await hashPassword(input.password);
+  if (!user?.passwordHash || !passwordMatches) {
+    throw apiError(401, "Email atau password salah.");
+  }
+  if (user.status !== "ACTIVE") {
+    throw apiError(403, user.status === "REJECTED"
+      ? "Akun ini tidak dapat digunakan. Hubungi administrator."
+      : "Akun Anda masih menunggu persetujuan tim Rekap Baris.");
+  }
+  signIn(res, user);
+  res.json({ user: publicUser(user) });
+}));
+
+const genericResetMessage = "Jika nomor tersebut terdaftar, tautan reset password akan dikirim melalui WhatsApp.";
+
+app.post("/api/auth/forgot-password", authLimiter, asyncRoute(async (req, res) => {
+  const input = parse(z.object({
+    phone: z.string().trim().min(8).max(30)
+      .refine((phone) => Boolean(normalizePhone(phone)), "Masukkan nomor HP yang valid.")
+      .transform(normalizePhone)
+  }), req.body);
+  if (!getFonnteConfig()) throw apiError(503, "Layanan WhatsApp reset password belum dikonfigurasi. Hubungi administrator.");
+  const user = await prisma.user.findFirst({ where: { phone: { in: phoneLookupCandidates(input.phone) } } });
+  if (user) {
+    const token = crypto.randomBytes(32).toString("base64url");
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { passwordResetTokenHash: tokenHash, passwordResetExpiresAt: expiresAt }
+    });
+    try {
+      const recipient = whatsappRecipient(user.phone);
+      if (!recipient) throw new Error("Account phone number is not a valid WhatsApp recipient.");
+      const resetUrl = new URL("/", appUrl);
+      resetUrl.searchParams.set("resetToken", token);
+      await sendPasswordResetWhatsApp({ phone: recipient, name: user.name, resetUrl: resetUrl.toString() });
+    } catch (error) {
+      try {
+        await prisma.user.updateMany({
+          where: { id: user.id, passwordResetTokenHash: tokenHash },
+          data: { passwordResetTokenHash: null, passwordResetExpiresAt: null }
+        });
+      } catch (cleanupError) {
+        console.error("Failed to clear undelivered password reset token:", cleanupError.message);
+      }
+      console.error("Password reset WhatsApp delivery failed:", error.message);
+    }
+  }
+  res.json({ message: genericResetMessage });
+}));
+
+app.post("/api/auth/reset-password", authLimiter, asyncRoute(async (req, res) => {
+  const input = parse(z.object({
+    token: z.string().min(32).max(128),
+    password: passwordSchema
+  }), req.body);
+  const tokenHash = crypto.createHash("sha256").update(input.token).digest("hex");
+  const user = await prisma.user.findFirst({
+    where: { passwordResetTokenHash: tokenHash, passwordResetExpiresAt: { gt: new Date() } }
+  });
+  if (!user) throw apiError(400, "Tautan reset tidak valid atau sudah kedaluwarsa.");
+  const passwordHash = await hashPassword(input.password);
+  const updated = await prisma.user.updateMany({
+    where: {
+      id: user.id,
+      passwordResetTokenHash: tokenHash,
+      passwordResetExpiresAt: { gt: new Date() }
+    },
+    data: {
+      passwordHash,
+      authVersion: { increment: 1 },
+      passwordResetTokenHash: null,
+      passwordResetExpiresAt: null
+    }
+  });
+  if (updated.count !== 1) throw apiError(400, "Tautan reset tidak valid atau sudah kedaluwarsa.");
+  res.json({ message: "Password berhasil diperbarui. Silakan masuk." });
+}));
+
 app.get("/api/auth/google", authLimiter, asyncRoute(async (req, res) => {
   if (!googleClientId || !googleClientSecret) throw apiError(503, "Login Google belum dikonfigurasi.");
   const input = parse(z.object({
@@ -177,7 +351,7 @@ app.get("/api/auth/google", authLimiter, asyncRoute(async (req, res) => {
     eventName: z.string().trim().max(150).optional()
   }), req.query);
   if (input.role === "ORGANIZER" && (!input.institution || !input.eventName)) {
-    throw apiError(400, "Penyelenggara harus mengisi institusi dan nama event.");
+    throw apiError(400, "Penyelenggara harus mengisi asal satuan dan nama event.");
   }
 
   const state = crypto.randomBytes(32).toString("hex");
@@ -255,35 +429,14 @@ app.get("/api/auth/google/callback", authLimiter, asyncRoute(async (req, res) =>
     const user = await prisma.$transaction(async (tx) => {
       let existing = await tx.user.findUnique({ where: { googleId: profile.sub } });
       if (!existing) existing = await tx.user.findUnique({ where: { email: profile.email.toLowerCase() } });
+      if (!existing) throw apiError(404, "Akun belum terdaftar. Daftar terlebih dahulu dengan email.");
       if (existing?.googleId && existing.googleId !== profile.sub) {
         throw apiError(409, "Email ini sudah terhubung ke akun Google lain.");
       }
-      if (existing) {
-        return tx.user.update({
-          where: { id: existing.id },
-          data: { googleId: profile.sub, name: profile.name || existing.name }
-        });
-      }
-
-      const created = await tx.user.create({
-        data: {
-          googleId: profile.sub,
-          name: profile.name || profile.email,
-          email: profile.email.toLowerCase(),
-          role: oauthState.role || "PARTICIPANT",
-          status: "PENDING"
-        }
+      return tx.user.update({
+        where: { id: existing.id },
+        data: { googleId: profile.sub, name: profile.name || existing.name }
       });
-      if (created.role === "ORGANIZER") {
-        await tx.event.create({
-          data: {
-            organizerId: created.id,
-            name: oauthState.eventName,
-            institution: oauthState.institution
-          }
-        });
-      }
-      return created;
     });
 
     if (user.status !== "ACTIVE") {
@@ -293,7 +446,10 @@ app.get("/api/auth/google/callback", authLimiter, asyncRoute(async (req, res) =>
     return res.redirect(authRedirect("success"));
   } catch (error) {
     console.error("Google OAuth failed:", error.message);
-    return res.redirect(authRedirect(error.status === 409 ? "account_conflict" : "google_error"));
+    const result = error.status === 409 ? "account_conflict"
+      : error.status === 404 ? "not_registered"
+        : "google_error";
+    return res.redirect(authRedirect(result));
   }
 }));
 
@@ -303,6 +459,43 @@ app.post("/api/auth/logout", (req, res) => {
 });
 
 app.get("/api/auth/me", requireAuth, (req, res) => res.json({ user: publicUser(req.user) }));
+
+app.get("/api/dashboard", requireAuth, asyncRoute(async (req, res) => {
+  const { id, role, institution, eventName } = req.user;
+  if (role === "PARTICIPANT") {
+    const [registrations, payments] = await Promise.all([
+      prisma.eventRegistration.findMany({
+        where: { userId: id },
+        orderBy: { createdAt: "desc" },
+        include: { event: { select: { name: true, startsAt: true } } }
+      }),
+      prisma.payment.findMany({
+        where: { userId: id },
+        orderBy: { createdAt: "desc" },
+        take: 20,
+        include: { event: { select: { name: true } }, product: { select: { name: true } } }
+      })
+    ]);
+    return res.json({ role, institution, registrations, payments });
+  }
+  if (role === "ORGANIZER") {
+    const events = await prisma.event.findMany({
+      where: { organizerId: id },
+      orderBy: { createdAt: "desc" },
+      include: { _count: { select: { registrations: true } } }
+    });
+    return res.json({ role, institution, events });
+  }
+  if (role === "JUDGE") {
+    const events = await prisma.event.findMany({
+      where: { status: "APPROVED", ...(institution ? { institution } : {}) },
+      orderBy: [{ startsAt: "asc" }, { createdAt: "desc" }],
+      select: { id: true, name: true, institution: true, startsAt: true, endsAt: true, status: true }
+    });
+    return res.json({ role, institution, events, eventName });
+  }
+  throw apiError(403, "Role tidak memiliki dashboard pengguna.");
+}));
 
 app.get("/api/events", publicLimiter, asyncRoute(async (req, res) => {
   const events = await prisma.event.findMany({
@@ -588,7 +781,7 @@ app.get("/api/admin/users", requireAuth, requireStaff, asyncRoute(async (req, re
     where: status ? { status } : {},
     orderBy: { createdAt: "desc" },
     take: 100,
-    select: { id: true, name: true, email: true, googleId: true, phone: true, role: true, status: true, createdAt: true }
+    select: { id: true, name: true, email: true, googleId: true, phone: true, institution: true, eventName: true, role: true, status: true, createdAt: true }
   });
   res.json({ users });
 }));

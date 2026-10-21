@@ -54,6 +54,11 @@ model User {
   googleId           String?               @unique
   phone              String?               @unique
   passwordHash       String?
+  institution        String?
+  eventName          String?
+  passwordResetTokenHash String?           @unique
+  passwordResetExpiresAt DateTime?
+  authVersion        Int                   @default(0)
   role               UserRole              @default(PARTICIPANT)
   status             UserStatus            @default(PENDING)
   createdAt          DateTime              @default(now())
