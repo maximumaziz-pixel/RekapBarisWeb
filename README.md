@@ -8,9 +8,10 @@ Platform manajemen event perlombaan, pendaftaran peserta, e-voting, e-ticketing,
 - Direktori event dengan pencarian, filter status, dan pengurutan.
 - Pendaftaran peserta yang dapat diverifikasi staf.
 - E-voting, tiket penonton, dan merchandise melalui Midtrans Snap QRIS.
-- Registrasi peran peserta, penyelenggara, dan juri; login email/nomor HP/password, reset password melalui WhatsApp, dan Google OAuth opsional.
+- Registrasi peserta dan penyelenggara; akun juri dibuat oleh Admin/Tim. Login email/nomor HP/password, reset password melalui WhatsApp, dan Google OAuth opsional.
 - Dashboard terpisah untuk Admin, Tim Rekap, peserta, penyelenggara, dan juri dengan akses data sesuai role.
 - Dashboard Admin/Tim untuk ringkasan, akun, event, peserta, pembayaran, serta stok/produk.
+- Jadwal event lebih dari satu hari, halaman pengajuan dan edit event penyelenggara, serta modul rekap nilai berbasis event untuk Admin/Tim dan juri yang ditugaskan.
 - Tombol chat WhatsApp Admin yang tersedia pada semua halaman.
 - Express menyajikan UI, aset `public/`, dan berkas `UPLOAD_DIR` melalui `/uploads/`.
 
@@ -116,6 +117,8 @@ npm start
 
 > `db:deploy` memakai `prisma db push` tanpa flag penghapusan data otomatis. Tetap buat backup sebelum perubahan skema, terutama pada database yang berisi data penting.
 
+Skema terbaru menambahkan tabel `EventSchedule`, `ScoringCriterion`, `JudgeAssignment`, dan `CompetitionScore` secara aditif. Setelah meninjau perubahan skema dan membuat backup database, jalankan `npm run db:deploy` untuk menerapkannya. Perintah ini tidak dijalankan otomatis saat perubahan kode. Ranking sementara memakai rata-rata nilai juri per kriteria, dikalikan bobot lalu dijumlahkan; nilai seri berbagi peringkat dan peserta dengan kriteria aktif yang belum dinilai tidak diberi peringkat.
+
 ## 3. Konfigurasi Google OAuth
 
 1. Di [Google Cloud Console](https://console.cloud.google.com/), pilih project dan konfigurasi OAuth consent screen serta domain aplikasi.
@@ -133,9 +136,9 @@ npm start
    https://rekapbaris.com/api/auth/google/callback
    ```
 
-Pendaftaran meminta nama, email, nomor HP, dan asal satuan untuk peserta; data yang sama ditambah nama event untuk penyelenggara; juri mengisi nama, email, dan nomor HP. Password minimal 8 karakter serta wajib mengandung huruf, angka, dan simbol (spasi saja tidak dihitung sebagai simbol); password disimpan sebagai hash scrypt. Akun baru berstatus menunggu persetujuan Admin/Tim. Login mendukung email/nomor HP; Admin/Tim juga dapat memakai nama username dari environment. Google adalah pilihan login opsional untuk akun yang sudah terdaftar dengan email terverifikasi. Seed membuat akun staf aktif dengan password dari `ADMIN_PASSWORD` dan `TEAM_PASSWORD`; role staf tidak dapat dipilih dari formulir publik.
+Pendaftaran password meminta nama, email, nomor HP, dan asal satuan untuk peserta; data yang sama ditambah nama event untuk penyelenggara. Pendaftaran juri publik dinonaktifkan; akun juri harus disediakan oleh Admin/Tim. Pendaftaran Google membuat akun peserta berstatus menunggu persetujuan dan tidak meminta atau menerima role istimewa. Password minimal 8 karakter serta wajib mengandung huruf, angka, dan simbol (spasi saja tidak dihitung sebagai simbol); password disimpan sebagai hash scrypt. Akun baru berstatus menunggu persetujuan Admin/Tim. Login mendukung email/nomor HP; Admin/Tim juga dapat memakai nama username dari environment. Google memerlukan email terverifikasi dan kredensial OAuth yang benar. Seed membuat akun staf aktif dengan password dari `ADMIN_PASSWORD` dan `TEAM_PASSWORD`; role staf tidak dapat dipilih dari formulir publik.
 
-Lupa password mengirim reset ke nomor WhatsApp yang terdaftar. Respons dibuat generik agar nomor akun tidak dapat ditebak; token acak disimpan dalam bentuk hash, berlaku satu jam, hanya dapat digunakan sekali, dan sesi lama dicabut setelah reset. Nomor pengguna harus dapat menerima pesan WhatsApp. Dashboard peserta menampilkan pendaftaran dan transaksi miliknya; penyelenggara hanya melihat event miliknya; juri melihat event approved pada satuannya (atau semua event approved jika asal satuan kosong). Penugasan juri saat ini dikelola terpisah oleh Tim Rekap.
+Lupa password mengirim reset ke nomor WhatsApp yang terdaftar. Respons dibuat generik agar nomor akun tidak dapat ditebak; token acak disimpan dalam bentuk hash, berlaku satu jam, hanya dapat digunakan sekali, dan sesi lama dicabut setelah reset. Nomor pengguna harus dapat menerima pesan WhatsApp. Dashboard peserta menampilkan pendaftaran dan transaksi miliknya; penyelenggara mengelola event miliknya; juri hanya melihat event yang ditugaskan kepada akun tersebut. Admin dan Tim Rekap mengatur kriteria, menugaskan juri, melihat nilai, dan memantau ranking sementara per event. Nilai tiap kriteria dirata-ratakan antarjuri yang ditugaskan lalu dikalikan bobot; peserta yang belum mendapat nilai pada semua kriteria aktif ditandai belum lengkap dan tidak diberi peringkat. Nilai seri berbagi peringkat.
 
 Jika Google menampilkan `401: invalid_client`, periksa Client ID dan Client Secret dari OAuth client **Web application** yang sama. Pastikan secret tidak kedaluwarsa/terhapus, `GOOGLE_CALLBACK_URL` sama persis dengan Authorized redirect URI (termasuk `/api/auth/google/callback`), dan restart proses Node/PM2 sesudah mengubah `.env`. Error ini umumnya menandakan kredensial client tidak valid; ketidaksesuaian callback biasanya dilaporkan Google sebagai `redirect_uri_mismatch`.
 
@@ -343,7 +346,7 @@ Konfigurasi repo mengarahkan HTTP ke HTTPS dan meneruskan traffic HTTPS ke Expre
 ## Pengelolaan file dan konfigurasi
 
 - `public/logo.svg` dipakai sebagai logo navbar, ikon situs, dan watermark hero.
-- Express melayani file statis dari `public/` dan hasil build `dist/`. Berkas dalam `UPLOAD_DIR` tersedia melalui `/uploads/`; file dapat diletakkan melalui SFTP/alat deployment. Endpoint upload belum disediakan, jadi jangan memberi akses tulis publik langsung ke server.
+- Express melayani file statis dari `public/` dan hasil build `dist/`. Poster event JPEG, PNG, atau WebP hingga 5 MB dapat diunggah dari form tambah/edit event; API memvalidasi tipe dan signature file serta hak pemilik event. Berkas disimpan di `UPLOAD_DIR` dan tersedia melalui `/uploads/`. Pastikan proses Node memiliki izin tulis ke direktori tersebut dan direktori upload termasuk dalam backup.
 - Untuk mengubah desain Tailwind, edit `tailwind.config.js` dan `src/styles.css`; layout halaman berada di `src/App.jsx`.
 - Toggle tema menyimpan pilihan browser. Tombol WhatsApp mengarah ke nomor Admin `VITE_ADMIN_WHATSAPP`; klik balon hijau untuk membuka kartu chat, lalu pilih **Mulai chat WhatsApp**.
 - Skema database PostgreSQL berada di `prisma/schema.prisma`. Salin `ttdj/.env.example` hanya untuk membuat environment baru; jangan pernah menimpa `.env` production yang sudah berisi credential.
@@ -359,7 +362,7 @@ npm run db:validate   # Validasi schema Prisma
 npm run db:generate   # Generate Prisma Client
 npm run db:deploy     # Sinkronkan schema ke database
 npm run db:seed       # Seed akun Admin dan Tim
-npm run test:auth     # Uji hash dan verifikasi password
+npm run test:auth     # Uji autentikasi, nomor WhatsApp, dan ranking
 ```
 
 ## Langkah pembaruan aplikasi di VPS

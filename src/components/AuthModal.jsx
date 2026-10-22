@@ -1,10 +1,9 @@
 import { useEffect, useState } from "react";
-import { ArrowRight, Flag, ShieldCheck, Trophy, UserRound, X } from "lucide-react";
+import { ArrowRight, Eye, EyeOff, Flag, ShieldCheck, UserRound, X } from "lucide-react";
 
 const roles = [
   { id: "PARTICIPANT", label: "Peserta", icon: UserRound },
   { id: "ORGANIZER", label: "Penyelenggara", icon: Flag },
-  { id: "JUDGE", label: "Juri", icon: Trophy }
 ];
 
 export default function AuthModal({ mode, setMode, close, error, resetToken, onCredentialAuth }) {
@@ -16,6 +15,8 @@ export default function AuthModal({ mode, setMode, close, error, resetToken, onC
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [formError, setFormError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   useEffect(() => {
@@ -97,7 +98,7 @@ export default function AuthModal({ mode, setMode, close, error, resetToken, onC
         <div className="auth-heading">
           <span className="eyebrow">REKAP BARIS / AKUN</span>
           <h2 id="auth-heading">{title}</h2>
-          <p>{mode === "register" ? "Lengkapi data sesuai peran. Google tersedia untuk masuk ke akun yang telah terdaftar."
+          <p>{mode === "register" ? "Lengkapi data sesuai peran, atau buat akun peserta melalui Google."
             : mode === "forgot-password" ? "Masukkan nomor WhatsApp yang terdaftar di akun Anda."
               : mode === "reset-password" ? "Tautan reset berlaku selama 60 menit."
                 : "Masuk dengan email, nomor HP, atau username Admin/Tim Rekap."}</p>
@@ -124,19 +125,22 @@ export default function AuthModal({ mode, setMode, close, error, resetToken, onC
           </label>}
           {(mode === "login" || mode === "register" || mode === "reset-password") && <>
             <label className="auth-field">{passwordFieldLabel}
-              <input autoComplete={mode === "login" ? "current-password" : "new-password"} maxLength="128" minLength={mode === "login" ? undefined : "8"} onChange={(event) => setPassword(event.target.value)} required type="password" value={password} />
+              <span className="password-input-wrap"><input autoComplete={mode === "login" ? "current-password" : "new-password"} maxLength="128" minLength={mode === "login" ? undefined : "8"} onChange={(event) => setPassword(event.target.value)} required type={showPassword ? "text" : "password"} value={password} /><button className="password-visibility" type="button" onClick={() => setShowPassword((visible) => !visible)} aria-label={showPassword ? "Sembunyikan password" : "Tampilkan password"} aria-pressed={showPassword}>{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button></span>
             </label>
             {(mode === "register" || mode === "reset-password") && <small className="field-caption">{passwordHelp}</small>}
-            {mode === "reset-password" && <label className="auth-field">Konfirmasi password<input autoComplete="new-password" maxLength="128" onChange={(event) => setConfirmPassword(event.target.value)} required type="password" value={confirmPassword} /></label>}
+            {mode === "reset-password" && <label className="auth-field">Konfirmasi password<span className="password-input-wrap"><input autoComplete="new-password" maxLength="128" onChange={(event) => setConfirmPassword(event.target.value)} required type={showConfirmPassword ? "text" : "password"} value={confirmPassword} /><button className="password-visibility" type="button" onClick={() => setShowConfirmPassword((visible) => !visible)} aria-label={showConfirmPassword ? "Sembunyikan konfirmasi password" : "Tampilkan konfirmasi password"} aria-pressed={showConfirmPassword}>{showConfirmPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button></span></label>}
           </>}
           <button className="button button-primary auth-submit" disabled={submitting} type="submit">
             {submitting ? "Memproses..." : mode === "register" ? "Daftar" : mode === "forgot-password" ? "Kirim link via WhatsApp" : mode === "reset-password" ? "Simpan password" : "Masuk"}<ArrowRight size={16} />
           </button>
-          {mode === "login" && <>
+          {(mode === "login" || mode === "register") && <>
+            {mode === "login" && <>
             {mode === "login" && <p className="auth-switch"><button type="button" onClick={() => { setFormError(""); setMode("forgot-password"); }}>Lupa password?</button></p>}
             <div className="auth-divider"><span>atau</span></div>
+            </>}
+            {mode === "register" && <div className="auth-divider"><span>atau</span></div>}
             <button className="button button-primary auth-submit google-submit" disabled={submitting} onClick={continueWithGoogle} type="button">
-              <span className="google-mark" aria-hidden="true">G</span>Masuk dengan Google<ArrowRight size={16} />
+              <span className="google-mark" aria-hidden="true">G</span>{mode === "register" ? "Daftar dengan Google sebagai peserta" : "Masuk dengan Google"}<ArrowRight size={16} />
             </button>
           </>}
           {mode === "register" && <p className="auth-consent">Akun baru menunggu persetujuan Admin/Tim Rekap.</p>}

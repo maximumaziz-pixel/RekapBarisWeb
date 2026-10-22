@@ -66,6 +66,8 @@ model User {
   organizedEvents    Event[]               @relation("EventOrganizer")
   registrations      EventRegistration[]
   payments           Payment[]
+  judgeAssignments   JudgeAssignment[]
+  scores             CompetitionScore[]
 
   @@index([status, role])
 }
@@ -88,6 +90,10 @@ model Event {
   updatedAt          DateTime            @updatedAt
   registrations      EventRegistration[]
   payments           Payment[]
+  schedules          EventSchedule[]
+  criteria           ScoringCriterion[]
+  judgeAssignments   JudgeAssignment[]
+  scores             CompetitionScore[]
 
   @@index([status, startsAt])
   @@index([organizerId])
@@ -104,9 +110,70 @@ model EventRegistration {
   status             RegistrationStatus @default(PENDING)
   createdAt          DateTime           @default(now())
   payments           Payment[]
+  scores             CompetitionScore[]
 
   @@unique([eventId, participantName])
   @@index([eventId, status])
+}
+
+model EventSchedule {
+  id        String   @id @default(cuid())
+  eventId   String
+  event     Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  startsAt  DateTime
+  endsAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@unique([eventId, startsAt])
+  @@index([eventId, startsAt])
+}
+
+model ScoringCriterion {
+  id        String   @id @default(cuid())
+  eventId   String
+  event     Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  name      String
+  weight    Float    @default(1)
+  minScore  Float    @default(0)
+  maxScore  Float    @default(100)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  scores    CompetitionScore[]
+
+  @@unique([eventId, name])
+  @@index([eventId, active])
+}
+
+model JudgeAssignment {
+  id        String   @id @default(cuid())
+  eventId   String
+  event     Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  judgeId   String
+  judge     User     @relation(fields: [judgeId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([eventId, judgeId])
+  @@index([judgeId, eventId])
+}
+
+model CompetitionScore {
+  id             String           @id @default(cuid())
+  eventId        String
+  event          Event            @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  registrationId String
+  registration   EventRegistration @relation(fields: [registrationId], references: [id], onDelete: Cascade)
+  criterionId    String
+  criterion      ScoringCriterion @relation(fields: [criterionId], references: [id], onDelete: Restrict)
+  judgeId        String
+  judge          User             @relation(fields: [judgeId], references: [id], onDelete: Restrict)
+  value          Float
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@unique([registrationId, criterionId, judgeId])
+  @@index([eventId, registrationId])
+  @@index([eventId, criterionId])
 }
 
 model Product {

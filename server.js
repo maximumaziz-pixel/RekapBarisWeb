@@ -2,6 +2,7 @@ require("dotenv").config();
 
 const crypto = require("node:crypto");
 const path = require("node:path");
+const fs = require("node:fs/promises");
 const express = require("express");
 const helmet = require("helmet");
 const cookieParser = require("cookie-parser");
@@ -14,10 +15,12 @@ const { z } = require("zod");
 const { hashPassword, isStrongPassword, verifyPassword } = require("./auth-password");
 const { normalizePhone, phoneLookupCandidates, whatsappRecipient } = require("./phone");
 const { getFonnteConfig, sendPasswordResetWhatsApp } = require("./whatsapp");
+const { scoringSummary } = require("./scoring");
 
 const app = express();
 const prisma = new PrismaClient();
 const port = Number(process.env.PORT || 3000);
+const uploadPath = path.resolve(process.env.UPLOAD_DIR || path.join(__dirname, "uploads"));
 const production = process.env.NODE_ENV === "production";
 const cookieName = "rb_session";
 const oauthCookieName = "rb_google_oauth";
@@ -53,7 +56,7 @@ app.use(cookieParser());
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  limit: 12,
+  limit: 30,
   standardHeaders: "draft-7",
   legacyHeaders: false,
   message: { error: "Terlalu banyak percobaan. Silakan coba lagi beberapa saat." }
@@ -160,11 +163,21 @@ const eventSchema = z.object({
   posterUrl: z.string().trim().url().max(1000).refine((value) => value.startsWith("https://"), "Poster harus menggunakan HTTPS.").optional().or(z.literal("")),
   startsAt: z.string().datetime().optional().or(z.literal("")),
   endsAt: z.string().datetime().optional().or(z.literal("")),
+  schedules: z.array(z.object({ startsAt: z.string().datetime(), endsAt: z.string().datetime().optional().or(z.literal("")) }).refine((schedule) => !schedule.endsAt || new Date(schedule.endsAt) > new Date(schedule.startsAt), { message: "Waktu selesai jadwal harus setelah waktu mulai." })).max(20).optional(),
   location: z.string().trim().max(200).optional(),
   ticketPrice: z.number().int().min(0).max(100000000).default(0),
   votePrice: z.number().int().min(1000).max(10000000).default(1000)
 }).refine((event) => !event.startsAt || !event.endsAt || new Date(event.endsAt) > new Date(event.startsAt), {
   message: "Waktu selesai event harus setelah waktu mulai."
+}).refine((event) => !event.schedules || new Set(event.schedules.map((schedule) => schedule.startsAt)).size === event.schedules.length, {
+  message: "Tanggal pelaksanaan tidak boleh duplikat."
+});
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { error: "Terlalu banyak percobaan login dari jaringan ini. Silakan coba lagi setelah 15 menit atau gunakan reset password." }
 });
 
 app.get("/api/health", asyncRoute(async (req, res) => {
@@ -182,7 +195,9 @@ const passwordAccountSchema = z.object({
   name: z.string().trim().min(2).max(120),
   email: z.string().trim().email().max(254).transform((email) => email.toLowerCase()),
   password: passwordSchema,
-  role: z.enum(["PARTICIPANT", "ORGANIZER", "JUDGE"]).default("PARTICIPANT"),
+  // Public signup must never create privileged judge accounts. Admin/Team
+  // provisioning can add this role through a separate, authorized workflow.
+  role: z.enum(["PARTICIPANT", "ORGANIZER"]).default("PARTICIPANT"),
   phone: z.string().trim().min(8).max(30).refine((value) => Boolean(normalizePhone(value)), "Masukkan nomor HP yang valid."),
   institution: z.string().trim().max(120).optional(),
   eventName: z.string().trim().max(150).optional()
@@ -234,7 +249,7 @@ app.post("/api/auth/register", authLimiter, asyncRoute(async (req, res) => {
   }
 }));
 
-app.post("/api/auth/login", authLimiter, asyncRoute(async (req, res) => {
+app.post("/api/auth/login", loginLimiter, asyncRoute(async (req, res) => {
   const input = parse(z.object({
     identifier: z.string().trim().min(1).max(254),
     password: z.string().min(1).max(128)
@@ -346,7 +361,7 @@ app.post("/api/auth/reset-password", authLimiter, asyncRoute(async (req, res) =>
 app.get("/api/auth/google", authLimiter, asyncRoute(async (req, res) => {
   if (!googleClientId || !googleClientSecret) throw apiError(503, "Login Google belum dikonfigurasi.");
   const input = parse(z.object({
-    role: z.enum(["PARTICIPANT", "ORGANIZER", "JUDGE"]).default("PARTICIPANT"),
+    role: z.enum(["PARTICIPANT", "ORGANIZER"]).default("PARTICIPANT"),
     institution: z.string().trim().max(120).optional(),
     eventName: z.string().trim().max(150).optional()
   }), req.query);
@@ -429,7 +444,17 @@ app.get("/api/auth/google/callback", authLimiter, asyncRoute(async (req, res) =>
     const user = await prisma.$transaction(async (tx) => {
       let existing = await tx.user.findUnique({ where: { googleId: profile.sub } });
       if (!existing) existing = await tx.user.findUnique({ where: { email: profile.email.toLowerCase() } });
-      if (!existing) throw apiError(404, "Akun belum terdaftar. Daftar terlebih dahulu dengan email.");
+      if (!existing) {
+        return tx.user.create({
+          data: {
+            name: profile.name?.trim() || profile.email.split("@")[0],
+            email: profile.email.toLowerCase(),
+            googleId: profile.sub,
+            role: "PARTICIPANT",
+            status: "PENDING"
+          }
+        });
+      }
       if (existing?.googleId && existing.googleId !== profile.sub) {
         throw apiError(409, "Email ini sudah terhubung ke akun Google lain.");
       }
@@ -446,9 +471,7 @@ app.get("/api/auth/google/callback", authLimiter, asyncRoute(async (req, res) =>
     return res.redirect(authRedirect("success"));
   } catch (error) {
     console.error("Google OAuth failed:", error.message);
-    const result = error.status === 409 ? "account_conflict"
-      : error.status === 404 ? "not_registered"
-        : "google_error";
+    const result = error.status === 409 ? "account_conflict" : "google_error";
     return res.redirect(authRedirect(result));
   }
 }));
@@ -482,13 +505,13 @@ app.get("/api/dashboard", requireAuth, asyncRoute(async (req, res) => {
     const events = await prisma.event.findMany({
       where: { organizerId: id },
       orderBy: { createdAt: "desc" },
-      include: { _count: { select: { registrations: true } } }
+      include: { schedules: { orderBy: { startsAt: "asc" } }, _count: { select: { registrations: true } } }
     });
     return res.json({ role, institution, events });
   }
   if (role === "JUDGE") {
     const events = await prisma.event.findMany({
-      where: { status: "APPROVED", ...(institution ? { institution } : {}) },
+      where: { status: "APPROVED", judgeAssignments: { some: { judgeId: id } } },
       orderBy: [{ startsAt: "asc" }, { createdAt: "desc" }],
       select: { id: true, name: true, institution: true, startsAt: true, endsAt: true, status: true }
     });
@@ -501,7 +524,7 @@ app.get("/api/events", publicLimiter, asyncRoute(async (req, res) => {
   const events = await prisma.event.findMany({
     where: { status: "APPROVED" },
     orderBy: [{ startsAt: "asc" }, { createdAt: "desc" }],
-    include: { _count: { select: { registrations: { where: { status: "APPROVED" } } } } }
+    include: { schedules: { orderBy: { startsAt: "asc" } }, _count: { select: { registrations: { where: { status: "APPROVED" } } } } }
   });
   const eventIds = events.map((event) => event.id);
   const voteCounts = eventIds.length ? await prisma.payment.groupBy({
@@ -518,6 +541,7 @@ app.get("/api/events", publicLimiter, asyncRoute(async (req, res) => {
     posterUrl: event.posterUrl,
     startsAt: event.startsAt,
     endsAt: event.endsAt,
+    schedules: event.schedules,
     createdAt: event.createdAt,
     location: event.location,
     ticketPrice: event.ticketPrice,
@@ -530,7 +554,7 @@ app.get("/api/events", publicLimiter, asyncRoute(async (req, res) => {
 app.get("/api/events/:id", publicLimiter, asyncRoute(async (req, res) => {
   const event = await prisma.event.findFirst({
     where: { id: req.params.id, status: "APPROVED" },
-    include: { registrations: { where: { status: "APPROVED" }, orderBy: { participantName: "asc" } } }
+    include: { schedules: { orderBy: { startsAt: "asc" } }, registrations: { where: { status: "APPROVED" }, orderBy: { participantName: "asc" } } }
   });
   if (!event) throw apiError(404, "Event tidak ditemukan.");
   const counts = await prisma.payment.groupBy({
@@ -547,6 +571,7 @@ app.get("/api/events/:id", publicLimiter, asyncRoute(async (req, res) => {
     posterUrl: event.posterUrl,
     startsAt: event.startsAt,
     endsAt: event.endsAt,
+    schedules: event.schedules,
     location: event.location,
     ticketPrice: event.ticketPrice,
     votePrice: event.votePrice,
@@ -562,19 +587,82 @@ app.get("/api/events/:id", publicLimiter, asyncRoute(async (req, res) => {
 app.post("/api/events", requireAuth, asyncRoute(async (req, res) => {
   if (!["ORGANIZER", "ADMIN", "TEAM"].includes(req.user.role)) throw apiError(403, "Hanya penyelenggara atau staf yang dapat mengajukan event.");
   const input = parse(eventSchema, req.body);
-  const event = await prisma.event.create({
-    data: {
-      ...input,
-      startsAt: input.startsAt ? new Date(input.startsAt) : null,
-      endsAt: input.endsAt ? new Date(input.endsAt) : null,
+  const { schedules = [], ...fields } = input;
+  const dates = schedules.length ? schedules : input.startsAt ? [{ startsAt: input.startsAt, endsAt: input.endsAt || "" }] : [];
+  const orderedDates = dates.map((date) => ({ ...date, start: new Date(date.startsAt), end: date.endsAt ? new Date(date.endsAt) : null })).sort((a, b) => a.start - b.start);
+  const event = await prisma.$transaction(async (tx) => {
+    const created = await tx.event.create({ data: {
+      ...fields,
+      startsAt: orderedDates[0]?.start || (input.startsAt ? new Date(input.startsAt) : null),
+      endsAt: orderedDates.at(-1)?.end || (input.endsAt ? new Date(input.endsAt) : null),
       organizerId: req.user.id,
       status: req.user.role === "ADMIN" ? "APPROVED" : "PENDING"
-    }
+    } });
+    if (orderedDates.length) await tx.eventSchedule.createMany({ data: orderedDates.map((date) => ({ eventId: created.id, startsAt: date.start, endsAt: date.end })) });
+    return created;
   });
   res.status(201).json({ event });
 }));
 
+app.patch("/api/events/:id", requireAuth, asyncRoute(async (req, res) => {
+  if (!["ORGANIZER", "ADMIN", "TEAM"].includes(req.user.role)) throw apiError(403, "Hanya penyelenggara atau staf yang dapat mengubah event.");
+  const input = parse(eventSchema.partial(), req.body);
+  const existing = await prisma.event.findUnique({ where: { id: req.params.id }, select: { id: true, organizerId: true } });
+  if (!existing || (req.user.role === "ORGANIZER" && existing.organizerId !== req.user.id)) throw apiError(404, "Event tidak ditemukan atau bukan milik akun Anda.");
+  const { schedules, ...fields } = input;
+  if (fields.startsAt && fields.endsAt && new Date(fields.endsAt) <= new Date(fields.startsAt)) throw apiError(400, "Waktu selesai event harus setelah waktu mulai.");
+  const updateData = Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, ["startsAt", "endsAt"].includes(key) ? value ? new Date(value) : null : value]));
+  const event = await prisma.$transaction(async (tx) => {
+    if (schedules) {
+      await tx.eventSchedule.deleteMany({ where: { eventId: existing.id } });
+      const orderedDates = schedules.map((date) => ({ ...date, start: new Date(date.startsAt), end: date.endsAt ? new Date(date.endsAt) : null })).sort((a, b) => a.start - b.start);
+      if (orderedDates.length) await tx.eventSchedule.createMany({ data: orderedDates.map((date) => ({ eventId: existing.id, startsAt: date.start, endsAt: date.end })) });
+      updateData.startsAt = orderedDates[0]?.start || null;
+      updateData.endsAt = orderedDates.at(-1)?.end || null;
+    }
+    return tx.event.update({ where: { id: existing.id }, data: updateData, include: { schedules: { orderBy: { startsAt: "asc" } } } });
+  });
+  res.json({ event });
+}));
+
+const posterMimeTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
+const validatePosterMime = (req, res, next) => {
+  const mime = req.headers["content-type"]?.split(";")[0].trim().toLowerCase();
+  if (!posterMimeTypes.has(mime)) return next(apiError(415, "File harus berupa JPEG, PNG, atau WebP."));
+  next();
+};
+const posterUpload = express.raw({ type: () => true, limit: "5mb" });
+app.put("/api/events/:id/poster", requireAuth, validatePosterMime, posterUpload, asyncRoute(async (req, res) => {
+  if (!["ORGANIZER", "ADMIN", "TEAM"].includes(req.user.role)) throw apiError(403, "Hanya penyelenggara atau staf yang dapat mengubah poster event.");
+  const event = await prisma.event.findUnique({ where: { id: req.params.id }, select: { id: true, organizerId: true } });
+  if (!event || (req.user.role === "ORGANIZER" && event.organizerId !== req.user.id)) throw apiError(404, "Event tidak ditemukan atau bukan milik akun Anda.");
+  if (!Buffer.isBuffer(req.body) || req.body.length === 0) throw apiError(400, "Pilih file poster sebelum mengunggah.");
+  const mime = req.headers["content-type"]?.split(";")[0].toLowerCase();
+  const signatures = {
+    "image/png": req.body.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])),
+    "image/jpeg": req.body[0] === 0xff && req.body[1] === 0xd8 && req.body[2] === 0xff,
+    "image/webp": req.body.toString("ascii", 0, 4) === "RIFF" && req.body.toString("ascii", 8, 12) === "WEBP"
+  };
+  if (!signatures[mime]) throw apiError(415, "File harus berupa gambar JPEG, PNG, atau WebP yang valid.");
+  const extension = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" }[mime];
+  const filename = `${crypto.randomUUID()}.${extension}`;
+  await fs.mkdir(uploadPath, { recursive: true });
+  await fs.writeFile(path.join(uploadPath, filename), req.body, { flag: "wx", mode: 0o640 });
+  const posterUrl = `/uploads/${filename}`;
+  let updated;
+  try {
+    updated = await prisma.event.update({ where: { id: event.id }, data: { posterUrl } });
+  } catch (error) {
+    await fs.unlink(path.join(uploadPath, filename)).catch(() => {});
+    throw error;
+  }
+  res.json({ posterUrl: updated.posterUrl });
+}));
+
 app.post("/api/events/:id/register", requireAuth, asyncRoute(async (req, res) => {
+  if (req.user.role !== "PARTICIPANT") {
+    throw apiError(403, "Hanya akun peserta yang dapat mendaftar pada event.");
+  }
   const input = parse(z.object({
     participantName: z.string().trim().min(2).max(100),
     teamName: z.string().trim().max(120).optional()
@@ -775,6 +863,178 @@ app.get("/api/admin/summary", requireAuth, requireStaff, asyncRoute(async (req, 
   res.json({ summary: { users, pendingUsers, events, pendingEvents, judges, settledPayments: payments._count, revenue: payments._sum.amount || 0 } });
 }));
 
+const criterionSchema = z.object({
+  name: z.string().trim().min(2).max(80),
+  weight: z.number().finite().positive().max(1000).default(1),
+  minScore: z.number().finite().min(0).max(100000).default(0),
+  maxScore: z.number().finite().min(0).max(100000).default(100),
+  active: z.boolean().default(true)
+}).refine((criterion) => criterion.maxScore > criterion.minScore, { message: "Nilai maksimum harus lebih besar dari nilai minimum." });
+
+async function getScoringEvent(eventId) {
+  const event = await prisma.event.findUnique({
+    where: { id: eventId },
+    include: {
+      criteria: { orderBy: { createdAt: "asc" } },
+      registrations: { where: { status: "APPROVED" }, orderBy: { participantName: "asc" } },
+      judgeAssignments: { include: { judge: { select: { id: true, name: true, email: true, status: true } } } },
+      scores: true
+    }
+  });
+  if (!event) throw apiError(404, "Event tidak ditemukan.");
+  return event;
+}
+
+app.get("/api/admin/scoring/:eventId", requireAuth, requireStaff, asyncRoute(async (req, res) => {
+  const event = await getScoringEvent(req.params.eventId);
+  res.json({ event: { id: event.id, name: event.name }, criteria: event.criteria, judges: event.judgeAssignments.map((assignment) => assignment.judge), participants: scoringSummary(event) });
+}));
+
+app.post("/api/admin/scoring/:eventId/default-criteria", requireAuth, requireStaff, asyncRoute(async (req, res) => {
+  const event = await prisma.event.findUnique({ where: { id: req.params.eventId }, select: { id: true } });
+  if (!event) throw apiError(404, "Event tidak ditemukan.");
+  const defaults = ["PBB", "Danton", "Varfor", "Kostum"];
+  await prisma.$transaction(defaults.map((name) => prisma.scoringCriterion.upsert({
+    where: { eventId_name: { eventId: event.id, name } },
+    create: { eventId: event.id, name },
+    update: {}
+  })));
+  res.json({ message: "Kriteria bawaan tersedia.", criteria: await prisma.scoringCriterion.findMany({ where: { eventId: event.id }, orderBy: { createdAt: "asc" } }) });
+}));
+
+app.get("/api/judge/events/:eventId/scoring", requireAuth, asyncRoute(async (req, res) => {
+  if (req.user.role !== "JUDGE") throw apiError(403, "Fitur ini khusus juri.");
+  const assignment = await prisma.judgeAssignment.findUnique({ where: { eventId_judgeId: { eventId: req.params.eventId, judgeId: req.user.id } } });
+  if (!assignment) throw apiError(403, "Anda tidak ditugaskan untuk menilai event ini.");
+  const event = await prisma.event.findFirst({
+    where: { id: req.params.eventId, status: "APPROVED" },
+    include: { criteria: { where: { active: true }, orderBy: { createdAt: "asc" } }, registrations: { where: { status: "APPROVED" }, orderBy: { participantName: "asc" } }, scores: { where: { judgeId: req.user.id } } }
+  });
+  if (!event) throw apiError(404, "Event tidak tersedia.");
+  res.json({ event: { id: event.id, name: event.name }, criteria: event.criteria, participants: event.registrations, scores: event.scores });
+}));
+
+app.post("/api/admin/scoring/:eventId/criteria", requireAuth, requireStaff, asyncRoute(async (req, res) => {
+  const input = parse(criterionSchema, req.body);
+  const criterion = await prisma.scoringCriterion.create({ data: { ...input, eventId: req.params.eventId } }).catch((error) => {
+    if (error.code === "P2002") throw apiError(409, "Nama kriteria tersebut sudah digunakan pada event ini.");
+    if (error.code === "P2003") throw apiError(404, "Event tidak ditemukan.");
+    throw error;
+  });
+  res.status(201).json({ criterion });
+}));
+
+app.patch("/api/admin/scoring/:eventId/criteria/:criterionId", requireAuth, requireStaff, asyncRoute(async (req, res) => {
+  const input = parse(criterionSchema.innerType().partial().extend({ confirmRecalculation: z.boolean().optional() }), req.body);
+  const existing = await prisma.scoringCriterion.findFirst({ where: { id: req.params.criterionId, eventId: req.params.eventId } });
+  if (!existing) throw apiError(404, "Kriteria tidak ditemukan pada event ini.");
+  const next = { ...existing, ...input };
+  if (next.maxScore <= next.minScore) throw apiError(400, "Nilai maksimum harus lebih besar dari nilai minimum.");
+  const hasScores = await prisma.competitionScore.count({ where: { criterionId: existing.id } });
+  const changesScoringRule = input.name !== undefined || input.weight !== undefined || input.minScore !== undefined || input.maxScore !== undefined;
+  if (hasScores && changesScoringRule) throw apiError(409, "Nama, bobot, dan rentang kriteria tidak dapat diubah setelah nilai masuk. Tambahkan kriteria baru untuk perubahan tersebut.");
+  if (hasScores && input.active !== undefined && !input.confirmRecalculation) throw apiError(409, "Perubahan status akan menghitung ulang ranking. Konfirmasi perubahan ini terlebih dahulu.");
+  const updateData = { ...input };
+  delete updateData.confirmRecalculation;
+  const criterion = await prisma.scoringCriterion.update({ where: { id: existing.id }, data: updateData }).catch((error) => {
+    if (error.code === "P2002") throw apiError(409, "Nama kriteria tersebut sudah digunakan pada event ini.");
+    throw error;
+  });
+  res.json({ criterion });
+}));
+
+app.delete("/api/admin/scoring/:eventId/criteria/:criterionId", requireAuth, requireStaff, asyncRoute(async (req, res) => {
+  const criterion = await prisma.scoringCriterion.findFirst({ where: { id: req.params.criterionId, eventId: req.params.eventId } });
+  if (!criterion) throw apiError(404, "Kriteria tidak ditemukan pada event ini.");
+  if (await prisma.competitionScore.count({ where: { criterionId: criterion.id } })) throw apiError(409, "Kriteria yang sudah memiliki nilai tidak dapat dihapus. Nonaktifkan kriteria tersebut.");
+  await prisma.scoringCriterion.delete({ where: { id: criterion.id } });
+  res.status(204).end();
+}));
+
+app.post("/api/admin/scoring/:eventId/judges", requireAuth, requireStaff, asyncRoute(async (req, res) => {
+  const input = parse(z.object({ judgeId: z.string().min(1) }), req.body);
+  const judge = await prisma.user.findFirst({ where: { id: input.judgeId, role: "JUDGE", status: "ACTIVE" }, select: { id: true } });
+  if (!judge) throw apiError(404, "Akun juri aktif tidak ditemukan.");
+  const assignment = await prisma.judgeAssignment.create({ data: { eventId: req.params.eventId, judgeId: judge.id } }).catch((error) => {
+    if (error.code === "P2002") throw apiError(409, "Juri tersebut sudah ditugaskan pada event ini.");
+    if (error.code === "P2003") throw apiError(404, "Event tidak ditemukan.");
+    throw error;
+  });
+  res.status(201).json({ assignment });
+}));
+
+app.delete("/api/admin/scoring/:eventId/judges/:judgeId", requireAuth, requireStaff, asyncRoute(async (req, res) => {
+  const assignment = await prisma.judgeAssignment.findUnique({ where: { eventId_judgeId: { eventId: req.params.eventId, judgeId: req.params.judgeId } } });
+  if (!assignment) throw apiError(404, "Penugasan juri tidak ditemukan.");
+  await prisma.judgeAssignment.delete({ where: { id: assignment.id } });
+  res.status(204).end();
+}));
+
+app.post("/api/admin/judges", requireAuth, requireStaff, asyncRoute(async (req, res) => {
+  const input = parse(z.object({
+    name: z.string().trim().min(2).max(120),
+    email: z.string().trim().email().max(254).transform((value) => value.toLowerCase()),
+    phone: z.string().trim().min(8).max(30).refine((value) => Boolean(normalizePhone(value)), "Masukkan nomor HP yang valid.")
+  }), req.body);
+  const inaccessiblePassword = crypto.randomBytes(32).toString("base64url");
+  try {
+    const judge = await prisma.user.create({
+      data: {
+        name: input.name,
+        email: input.email,
+        phone: normalizePhone(input.phone),
+        role: "JUDGE",
+        status: "PENDING",
+        passwordHash: await hashPassword(inaccessiblePassword)
+      },
+      select: { id: true, name: true, email: true, phone: true, role: true, status: true }
+    });
+    res.status(201).json({ judge, message: "Akun juri dibuat dalam status menunggu persetujuan. Setelah diaktifkan, juri dapat mengatur password melalui alur lupa password WhatsApp." });
+  } catch (error) {
+    if (error.code === "P2002") throw apiError(409, "Email atau nomor HP sudah digunakan akun lain.");
+    throw error;
+  }
+}));
+
+app.patch("/api/admin/judges/:id", requireAuth, requireStaff, asyncRoute(async (req, res) => {
+  const input = parse(z.object({
+    name: z.string().trim().min(2).max(120),
+    email: z.string().trim().email().max(254).transform((value) => value.toLowerCase()),
+    phone: z.string().trim().min(8).max(30).refine((value) => Boolean(normalizePhone(value)), "Masukkan nomor HP yang valid.")
+  }), req.body);
+  const judge = await prisma.user.findFirst({ where: { id: req.params.id, role: "JUDGE" }, select: { id: true } });
+  if (!judge) throw apiError(404, "Akun juri tidak ditemukan.");
+  const updated = await prisma.user.update({ where: { id: judge.id }, data: { name: input.name, email: input.email, phone: normalizePhone(input.phone) }, select: { id: true, name: true, email: true, phone: true, role: true, status: true } }).catch((error) => {
+    if (error.code === "P2002") throw apiError(409, "Email atau nomor HP sudah digunakan akun lain.");
+    throw error;
+  });
+  res.json({ judge: updated });
+}));
+
+app.post("/api/events/:eventId/scores", requireAuth, asyncRoute(async (req, res) => {
+  const input = parse(z.object({ registrationId: z.string().min(1), criterionId: z.string().min(1), value: z.number().finite() }), req.body);
+  const assignment = await prisma.judgeAssignment.findUnique({ where: { eventId_judgeId: { eventId: req.params.eventId, judgeId: req.user.id } } });
+  if (req.user.role !== "JUDGE" || !assignment) throw apiError(403, "Anda tidak ditugaskan untuk menilai event ini.");
+  const [registration, criterion] = await Promise.all([
+    prisma.eventRegistration.findFirst({ where: { id: input.registrationId, eventId: req.params.eventId, status: "APPROVED" }, select: { id: true } }),
+    prisma.scoringCriterion.findFirst({ where: { id: input.criterionId, eventId: req.params.eventId, active: true } })
+  ]);
+  if (!registration) throw apiError(404, "Peserta tidak terdaftar atau belum disetujui pada event ini.");
+  if (!criterion) throw apiError(404, "Kriteria aktif tidak ditemukan pada event ini.");
+  if (input.value < criterion.minScore || input.value > criterion.maxScore) throw apiError(400, `Nilai harus berada pada rentang ${criterion.minScore} sampai ${criterion.maxScore}.`);
+  const score = await prisma.competitionScore.upsert({
+    where: { registrationId_criterionId_judgeId: { registrationId: registration.id, criterionId: criterion.id, judgeId: req.user.id } },
+    create: { eventId: req.params.eventId, registrationId: registration.id, criterionId: criterion.id, judgeId: req.user.id, value: input.value },
+    update: { value: input.value }
+  });
+  res.json({ score });
+}));
+
+app.get("/api/admin/scoring/:eventId/ranking", requireAuth, requireStaff, asyncRoute(async (req, res) => {
+  const event = await getScoringEvent(req.params.eventId);
+  res.json({ event: { id: event.id, name: event.name }, method: "Rata-rata per kriteria antar juri, lalu jumlah nilai rata-rata dikalikan bobot; peserta belum lengkap tidak diberi peringkat, nilai seri berbagi peringkat.", participants: scoringSummary(event) });
+}));
+
 app.get("/api/admin/users", requireAuth, requireStaff, asyncRoute(async (req, res) => {
   const status = ["PENDING", "ACTIVE", "REJECTED"].includes(req.query.status) ? req.query.status : undefined;
   const users = await prisma.user.findMany({
@@ -882,7 +1142,6 @@ app.patch("/api/admin/products/:id", requireAuth, requireStaff, asyncRoute(async
 app.use("/api", (req, res) => res.status(404).json({ error: "API tidak ditemukan." }));
 
 const distPath = path.join(__dirname, "dist");
-const uploadPath = path.resolve(process.env.UPLOAD_DIR || path.join(__dirname, "uploads"));
 app.use("/uploads", express.static(uploadPath, { dotfiles: "deny", index: false, maxAge: production ? "1h" : 0 }));
 app.use(express.static(path.join(__dirname, "public"), { index: false, maxAge: production ? "1h" : 0 }));
 app.use(express.static(distPath, { index: false, maxAge: production ? "1h" : 0 }));
@@ -895,7 +1154,8 @@ app.get("*", (req, res, next) => {
 
 app.use((error, req, res, next) => {
   if (res.headersSent) return next(error);
-  const status = Number.isInteger(error.status) ? error.status : 500;
+  const status = error.type === "entity.too.large" ? 413 : Number.isInteger(error.status) ? error.status : 500;
+  if (status === 413) error.message = "Ukuran poster maksimal 5 MB.";
   if (status >= 500) console.error("Request failed:", error);
   res.status(status).json({ error: status === 500 ? "Terjadi kesalahan pada server." : error.message });
 });

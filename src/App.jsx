@@ -75,7 +75,8 @@ function App() {
   const [staffSection, setStaffSection] = useState("overview");
   const [memberDashboard, setMemberDashboard] = useState(null);
   const [productForm, setProductForm] = useState({ name: "", description: "", imageUrl: "", price: "", stock: "" });
-  const [eventForm, setEventForm] = useState({ name: "", institution: "", description: "", posterUrl: "", startsAt: "", endsAt: "", location: "", ticketPrice: "0", votePrice: "1000" });
+  const emptyEventForm = { name: "", institution: "", description: "", posterUrl: "", posterFile: null, startsAt: "", endsAt: "", schedules: [{ startsAt: "", endsAt: "" }], location: "", ticketPrice: "0", votePrice: "1000" };
+  const [eventForm, setEventForm] = useState(emptyEventForm);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -304,19 +305,32 @@ function App() {
     event.preventDefault();
     setBusyId("event-create");
     try {
-      await api("/events", {
+      const { posterFile, ...eventFields } = eventForm;
+      const result = await api("/events", {
         method: "POST",
         body: JSON.stringify({
-          ...eventForm,
-          startsAt: eventForm.startsAt ? new Date(eventForm.startsAt).toISOString() : "",
-          endsAt: eventForm.endsAt ? new Date(eventForm.endsAt).toISOString() : "",
+          ...eventFields,
+          startsAt: eventForm.schedules[0]?.startsAt ? new Date(eventForm.schedules[0].startsAt).toISOString() : "",
+          endsAt: eventForm.schedules.at(-1)?.endsAt ? new Date(eventForm.schedules.at(-1).endsAt).toISOString() : "",
+          schedules: eventForm.schedules.filter((date) => date.startsAt).map((date) => ({ startsAt: new Date(date.startsAt).toISOString(), endsAt: date.endsAt ? new Date(date.endsAt).toISOString() : "" })),
           ticketPrice: Number(eventForm.ticketPrice),
           votePrice: Number(eventForm.votePrice)
         })
       });
-      setEventForm({ name: "", institution: "", description: "", posterUrl: "", startsAt: "", endsAt: "", location: "", ticketPrice: "0", votePrice: "1000" });
-      await Promise.all([refreshPublicData(), refreshDashboard()]);
-      setNotice("Event berhasil diajukan. Event Admin langsung aktif; pengajuan lain menunggu verifikasi.");
+      let posterError = "";
+      if (posterFile) {
+        try {
+          if (posterFile.size > 5 * 1024 * 1024) throw new Error("Ukuran poster maksimal 5 MB.");
+          if (!["image/jpeg", "image/png", "image/webp"].includes(posterFile.type)) throw new Error("Poster harus JPEG, PNG, atau WebP.");
+          await api(`/events/${result.event.id}/poster`, { method: "PUT", headers: { "Content-Type": posterFile.type }, body: posterFile });
+        }
+        catch (uploadError) { posterError = ` Event tersimpan, tetapi poster gagal diunggah: ${uploadError.message}`; }
+      }
+      setEventForm(emptyEventForm);
+      await refreshPublicData();
+      if (["ADMIN", "TEAM"].includes(user?.role)) await refreshDashboard();
+      else setMemberDashboard(await api("/dashboard"));
+      setNotice(`Event berhasil diajukan. Event Admin langsung aktif; pengajuan lain menunggu verifikasi.${posterError}`);
     } catch (requestError) {
       setError(requestError.message);
     } finally {
@@ -449,7 +463,7 @@ function App() {
               onEventStatus={(id, status) => changeStatus(`/admin/events/${id}/status`, status)}
               onRefresh={refreshDashboard}
             /><DashboardTools products={staffData.products} events={staffData.events} busyId={busyId} eventForm={eventForm} setEventForm={setEventForm} onEventCreate={createEvent} onProductUpdate={updateProduct} /></>}
-            {activeTab === "dashboard" && user && !["ADMIN", "TEAM"].includes(user.role) && <MemberDashboard user={user} data={memberDashboard} />}
+            {activeTab === "dashboard" && user && !["ADMIN", "TEAM"].includes(user.role) && <MemberDashboard user={user} data={memberDashboard} eventForm={eventForm} setEventForm={setEventForm} onEventCreate={createEvent} busyId={busyId} onRefresh={async () => setMemberDashboard(await api("/dashboard"))} />}
           </>
         )}
       </main>
@@ -575,7 +589,7 @@ function EventCard({ event, index, onClick, action }) {
         <span className={`event-status ${state === "Berlangsung" ? "status-live" : ""}`}><i />{state}</span>
       </button>
       <div className="event-card-body">
-        <div className="event-meta"><span><CalendarDays size={14} />{formatDate(event.startsAt)}</span><span><Users size={14} />{event.participants} peserta</span></div>
+        <div className="event-meta"><span><CalendarDays size={14} />{event.schedules?.length ? `${event.schedules.length} tanggal pelaksanaan` : formatDate(event.startsAt)}</span><span><Users size={14} />{event.participants} peserta</span></div>
         <h3>{event.name}</h3><p>{event.institution}{event.location ? ` · ${event.location}` : ""}</p>
         <div className="event-card-bottom"><span className="event-social"><Heart size={14} /> {event.votes} dukungan</span><button type="button" onClick={onClick}>{action} <ArrowRight size={14} /></button></div>
       </div>
@@ -603,7 +617,7 @@ function AboutPage({ onJoin }) {
   return <section className="section-wrap about-page"><div className="about-cover"><span className="eyebrow">RUANG UNTUK SEMUA BARIS</span><h1>Teknologi yang<br /><em>menyatukan gerakan.</em></h1><p>Rekap Baris adalah platform digital untuk membuat pengelolaan event, kompetisi, dukungan komunitas, dan ticketing lebih sederhana.</p><button className="button button-primary button-large" onClick={onJoin} type="button">Bertumbuh bersama <ArrowRight size={16} /></button><div className="about-orbit">RB</div></div><div className="about-values"><div><span>01 / KONEKSI</span><h3>Satu ruang untuk seluruh ekosistem event.</h3><p>Penyelenggara, peserta, juri, dan penonton dapat terhubung lewat pengalaman yang konsisten.</p></div><div><span>02 / TRANSPARANSI</span><h3>Proses yang jelas, data yang tertata.</h3><p>Moderasi event dan akun menjaga ruang publik tetap terpercaya dan nyaman digunakan.</p></div><div><span>03 / KEBERSAMAAN</span><h3>Semangat komunitas tetap menjadi pusatnya.</h3><p>Teknologi hadir untuk mendukung momen kebersamaan, bukan menggantikannya.</p></div></div></section>;
 }
 
-function MemberDashboard({ user, data }) {
+function MemberDashboard({ user, data, eventForm, setEventForm, onEventCreate, busyId, onRefresh }) {
   const roleNames = {
     PARTICIPANT: "Dashboard Peserta",
     ORGANIZER: "Dashboard Penyelenggara",
@@ -640,9 +654,10 @@ function MemberDashboard({ user, data }) {
       {user.role === "ORGANIZER" && <article className="dashboard-panel">
         <span className="eyebrow">EVENT SAYA</span>
         <h2>{data.events.length} event</h2>
-        {data.events.map((event) => <div className="member-dashboard-row" key={event.id}><strong>{event.name}</strong><span>{event.status}</span><small>{event.institution} · {event._count.registrations} pendaftar</small></div>)}
+        {data.events.map((event) => <OrganizerEventRow key={event.id} event={event} onSaved={onRefresh} />)}
         {!data.events.length && <p className="empty-inline">Belum ada event di akun ini. Hubungi Tim Rekap untuk mengajukan event.</p>}
       </article>}
+      {user.role === "ORGANIZER" && <OrganizerEventForm eventForm={eventForm} setEventForm={setEventForm} onEventCreate={onEventCreate} busyId={busyId} />}
       {user.role === "JUDGE" && <article className="dashboard-panel">
         <span className="eyebrow">EVENT DI SATUAN ANDA</span>
         <h2>{data.events.length} event tersedia</h2>
@@ -650,13 +665,123 @@ function MemberDashboard({ user, data }) {
         {data.events.map((event) => <div className="member-dashboard-row" key={event.id}><strong>{event.name}</strong><span>{event.startsAt ? formatDate(event.startsAt) : "Jadwal segera diumumkan"}</span><small>{event.institution}</small></div>)}
         {!data.events.length && <p className="empty-inline">Belum ada event tersedia untuk asal satuan ini.</p>}
       </article>}
+      {user.role === "JUDGE" && data.events.length > 0 && <JudgeScoring events={data.events} />}
     </div>
   </section>;
+}
+
+function localDateTimeValue(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
+  return date.toISOString().slice(0, 16);
+}
+
+function OrganizerEventRow({ event, onSaved }) {
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState({
+    name: event.name,
+    description: event.description,
+    location: event.location,
+    posterUrl: event.posterUrl,
+    schedules: event.schedules?.length ? event.schedules.map((date) => ({ startsAt: localDateTimeValue(date.startsAt), endsAt: localDateTimeValue(date.endsAt) })) : event.startsAt ? [{ startsAt: localDateTimeValue(event.startsAt), endsAt: localDateTimeValue(event.endsAt) }] : [{ startsAt: "", endsAt: "" }]
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const save = async (e) => {
+    e.preventDefault(); setBusy(true); setError("");
+    try {
+      const schedules = form.schedules.filter((date) => date.startsAt).map((date) => ({ startsAt: new Date(date.startsAt).toISOString(), endsAt: date.endsAt ? new Date(date.endsAt).toISOString() : "" }));
+      const { posterFile, ...fields } = form;
+      await api(`/events/${event.id}`, { method: "PATCH", body: JSON.stringify({ ...fields, schedules }) });
+      if (posterFile) {
+        try {
+          if (posterFile.size > 5 * 1024 * 1024) throw new Error("Ukuran poster maksimal 5 MB.");
+          if (!["image/jpeg", "image/png", "image/webp"].includes(posterFile.type)) throw new Error("Poster harus JPEG, PNG, atau WebP.");
+          await api(`/events/${event.id}/poster`, { method: "PUT", headers: { "Content-Type": posterFile.type }, body: posterFile });
+        } catch (uploadError) {
+          setEditing(false); setError(`Detail event tersimpan, tetapi poster gagal diunggah: ${uploadError.message}`); await onSaved(); return;
+        }
+      }
+      setEditing(false); setForm({ ...form, posterFile: null }); await onSaved();
+    } catch (requestError) { setError(requestError.message); }
+    finally { setBusy(false); }
+  };
+  return <div className="organizer-event-row">
+    <div className="member-dashboard-row"><strong>{event.name}</strong><span>{event.status}</span><small>{event.institution} · {event._count.registrations} pendaftar{event.schedules?.length ? ` · ${event.schedules.length} tanggal` : ""}</small></div>
+    <button type="button" className="text-link" onClick={() => setEditing((value) => !value)}>{editing ? "Tutup editor" : "Edit detail"}</button>
+    {editing && <form className="organizer-edit-form" onSubmit={save}>{error && <div className="form-alert form-alert-error" role="alert">{error}</div>}
+      <label>Nama event<input required minLength="3" maxLength="150" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
+      <label>Lokasi<input maxLength="200" value={form.location || ""} onChange={(e) => setForm({ ...form, location: e.target.value })} /></label>
+      <label>Poster HTTPS<input type="url" value={form.posterUrl || ""} onChange={(e) => setForm({ ...form, posterUrl: e.target.value })} /></label>
+      <label>Unggah poster<input type="file" accept="image/jpeg,image/png,image/webp" onChange={(e) => setForm({ ...form, posterFile: e.target.files?.[0] || null })} /><small>JPEG, PNG, atau WebP; maksimal 5 MB.</small></label>
+      <label>Deskripsi<textarea maxLength="3000" rows="3" value={form.description || ""} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
+      <div className="event-date-list">{form.schedules.map((date, index) => <div className="event-date-row" key={index}><label>Tanggal mulai<input type="datetime-local" value={date.startsAt} onChange={(e) => setForm({ ...form, schedules: form.schedules.map((item, i) => i === index ? { ...item, startsAt: e.target.value } : item) })} /></label><label>Tanggal selesai<input type="datetime-local" value={date.endsAt} onChange={(e) => setForm({ ...form, schedules: form.schedules.map((item, i) => i === index ? { ...item, endsAt: e.target.value } : item) })} /></label>{form.schedules.length > 1 && <button type="button" className="reject-button" aria-label={`Hapus tanggal ${index + 1}`} onClick={() => setForm({ ...form, schedules: form.schedules.filter((_, i) => i !== index) })}><X size={15} /></button>}</div>)}<button className="text-link" type="button" onClick={() => setForm({ ...form, schedules: [...form.schedules, { startsAt: "", endsAt: "" }] })}><CalendarDays size={14} /> Tambah tanggal</button></div>
+      <button className="button button-primary" type="submit" disabled={busy}>{busy ? "Menyimpan..." : "Simpan perubahan"}</button>
+    </form>}
+  </div>;
+}
+
+function JudgeScoring({ events }) {
+  const [eventId, setEventId] = useState(events[0]?.id || "");
+  const [data, setData] = useState(null);
+  const [drafts, setDrafts] = useState({});
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  useEffect(() => {
+    setData(null); setError("");
+    api(`/judge/events/${eventId}/scoring`).then((result) => {
+      setData(result);
+      setDrafts(Object.fromEntries(result.scores.map((score) => [`${score.registrationId}:${score.criterionId}`, String(score.value)])));
+    }).catch((requestError) => setError(requestError.message));
+  }, [eventId]);
+  const saveScore = async (registrationId, criterion) => {
+    const key = `${registrationId}:${criterion.id}`;
+    const value = Number(drafts[key]);
+    if (!Number.isFinite(value) || value < criterion.minScore || value > criterion.maxScore) {
+      setError(`Nilai ${criterion.name} harus berada pada rentang ${criterion.minScore} sampai ${criterion.maxScore}.`); return;
+    }
+    setBusy(key); setError(""); setNotice("");
+    try {
+      await api(`/events/${eventId}/scores`, { method: "POST", body: JSON.stringify({ registrationId, criterionId: criterion.id, value }) });
+      setNotice("Nilai berhasil disimpan.");
+    } catch (requestError) { setError(requestError.message); }
+    finally { setBusy(""); }
+  };
+  return <article className="dashboard-panel judge-scoring-panel"><span className="eyebrow">INPUT PENILAIAN JURI</span><h2>Penilaian event</h2>
+    <label className="scoring-event-picker">Event<select value={eventId} onChange={(event) => setEventId(event.target.value)}>{events.map((event) => <option key={event.id} value={event.id}>{event.name}</option>)}</select></label>
+    {error && <div className="form-alert form-alert-error" role="alert">{error}</div>}{notice && <div className="form-alert" role="status">{notice}</div>}
+    {!data && !error ? <p className="empty-inline">Memuat peserta dan kriteria...</p> : data && !data.criteria.length ? <p className="empty-inline">Kriteria untuk event ini belum disiapkan oleh Tim Rekap.</p> : data?.participants.map((participant) => <div className="judge-score-card" key={participant.id}><strong>{participant.teamName || participant.participantName}</strong><small>{participant.participantName}</small>{data.criteria.map((criterion) => {
+      const key = `${participant.id}:${criterion.id}`;
+      return <form className="judge-score-input" key={criterion.id} onSubmit={(event) => { event.preventDefault(); saveScore(participant.id, criterion); }}><label>{criterion.name}<input required type="number" min={criterion.minScore} max={criterion.maxScore} step="any" value={drafts[key] ?? ""} onChange={(event) => setDrafts({ ...drafts, [key]: event.target.value })} /></label><button className="button button-outline button-small" type="submit" disabled={Boolean(busy)}>{busy === key ? "Menyimpan..." : "Simpan nilai"}</button></form>;
+    })}</div>)}
+  </article>;
+}
+
+function OrganizerEventForm({ eventForm, setEventForm, onEventCreate, busyId }) {
+  const updateDate = (index, key, value) => setEventForm({
+    ...eventForm,
+    schedules: eventForm.schedules.map((date, dateIndex) => dateIndex === index ? { ...date, [key]: value } : date)
+  });
+  return <article className="dashboard-panel organizer-event-panel"><PanelTitle kicker="PENGELOLAAN PENYELENGGARA" title="Ajukan event" text="Event baru ditinjau Tim Rekap sebelum dipublikasikan. Kamu hanya dapat mengubah event milik akun ini." />
+    <form className="event-admin-form" onSubmit={onEventCreate}>
+      <label>Nama event<input required minLength="3" maxLength="150" value={eventForm.name} onChange={(event) => setEventForm({ ...eventForm, name: event.target.value })} /></label>
+      <label>Asal satuan<input required minLength="2" maxLength="120" value={eventForm.institution} onChange={(event) => setEventForm({ ...eventForm, institution: event.target.value })} /></label>
+      <label>Lokasi<input maxLength="200" value={eventForm.location} onChange={(event) => setEventForm({ ...eventForm, location: event.target.value })} /></label>
+      <label>Poster (URL HTTPS)<input type="url" value={eventForm.posterUrl} onChange={(event) => setEventForm({ ...eventForm, posterUrl: event.target.value })} /></label>
+      <label>Unggah poster<input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setEventForm({ ...eventForm, posterFile: event.target.files?.[0] || null })} /><small>JPEG, PNG, atau WebP; maksimal 5 MB.</small></label>
+      <div className="event-date-list">{eventForm.schedules.map((date, index) => <div className="event-date-row" key={index}><label>Tanggal mulai<input type="datetime-local" value={date.startsAt} onChange={(event) => updateDate(index, "startsAt", event.target.value)} /></label><label>Tanggal selesai<input type="datetime-local" value={date.endsAt} onChange={(event) => updateDate(index, "endsAt", event.target.value)} /></label>{eventForm.schedules.length > 1 && <button type="button" className="reject-button" aria-label={`Hapus tanggal ${index + 1}`} onClick={() => setEventForm({ ...eventForm, schedules: eventForm.schedules.filter((_, i) => i !== index) })}><X size={15} /></button>}</div>)}<button className="text-link" type="button" onClick={() => setEventForm({ ...eventForm, schedules: [...eventForm.schedules, { startsAt: "", endsAt: "" }] })}><CalendarDays size={14} /> Tambah tanggal</button></div>
+      <label className="event-description-field">Deskripsi<textarea maxLength="3000" rows="3" value={eventForm.description} onChange={(event) => setEventForm({ ...eventForm, description: event.target.value })} /></label>
+      <button className="button button-primary" type="submit" disabled={busyId === "event-create"}>{busyId === "event-create" ? "Menyimpan..." : "Ajukan event"}<ArrowRight size={15} /></button>
+    </form>
+  </article>;
 }
 
 function DashboardPage({ user, summary, data, section, setSection, busyId, productForm, setProductForm, onProductCreate, onUserStatus, onEventStatus, onRefresh }) {
   const sections = [
     { id: "overview", label: "Ringkasan", icon: LayoutDashboard },
+    { id: "scoring", label: "Rekap penilaian", icon: Trophy },
     { id: "users", label: "Akun pengguna", icon: Users },
     { id: "events", label: "Manajemen event", icon: CalendarDays },
     { id: "payments", label: "Voting & ticketing", icon: CreditCard },
@@ -684,7 +809,7 @@ function DashboardPage({ user, summary, data, section, setSection, busyId, produ
             </div>
             <div className="dashboard-panel revenue-panel"><span className="eyebrow">PEMBAYARAN TERVERIFIKASI</span><strong>{rupiah(summary.revenue)}</strong><p>{summary.settledPayments} transaksi berhasil tercatat.</p><div className="revenue-decoration"><CreditCard size={27} /></div></div>
           </div>
-        </> : section === "users" ? <>
+        </> : section === "scoring" ? <ScoringModule events={data.events} users={data.users} onRefresh={onRefresh} /> : section === "users" ? <>
           <PanelTitle kicker="MANAJEMEN AKUN" title="Akun pengguna" text="Tinjau data dan persetujuan pendaftaran peserta, penyelenggara, serta juri." />
           <div className="staff-table">{data.users.map((item) => <div className="staff-row" key={item.id}>
             <div className="staff-person"><span className="mini-avatar"><UserRound size={15} /></span><div><strong>{item.name}</strong><small>{[item.email, item.phone, item.institution, item.eventName].filter(Boolean).join(" · ")}</small></div></div>
@@ -716,6 +841,108 @@ function DashboardPage({ user, summary, data, section, setSection, busyId, produ
       </div>
     </div>
   </section>;
+}
+
+function ScoringModule({ events = [], users = [], onRefresh }) {
+  const [eventId, setEventId] = useState("");
+  const [scoring, setScoring] = useState(null);
+  const [criterionName, setCriterionName] = useState("");
+  const [criterionWeight, setCriterionWeight] = useState("1");
+  const [judgeId, setJudgeId] = useState("");
+  const [judgeForm, setJudgeForm] = useState({ name: "", email: "", phone: "" });
+  const [busy, setBusy] = useState(false);
+  const [showRanking, setShowRanking] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const judges = users.filter((item) => item.role === "JUDGE" && item.status === "ACTIVE");
+
+  useEffect(() => {
+    if (!eventId && events.length) setEventId(events[0].id);
+  }, [eventId, events]);
+
+  const load = async () => {
+    if (!eventId) return;
+    setBusy(true);
+    setError("");
+    try { setScoring(await api(`/admin/scoring/${eventId}`)); }
+    catch (requestError) { setError(requestError.message); }
+    finally { setBusy(false); }
+  };
+  useEffect(() => { setScoring(null); load(); }, [eventId]);
+
+  const run = async (action, successText) => {
+    setBusy(true); setError(""); setMessage("");
+    try { await action(); await load(); setMessage(successText); return true; }
+    catch (requestError) { setError(requestError.message); return false; }
+    finally { setBusy(false); }
+  };
+  const createCriterion = async (event) => {
+    event.preventDefault();
+    if (await run(() => api(`/admin/scoring/${eventId}/criteria`, { method: "POST", body: JSON.stringify({ name: criterionName, weight: Number(criterionWeight) }) }), "Kriteria berhasil ditambahkan.")) setCriterionName("");
+  };
+  const createJudge = (event) => {
+    event.preventDefault();
+    return run(async () => {
+      await api("/admin/judges", { method: "POST", body: JSON.stringify(judgeForm) });
+      setJudgeForm({ name: "", email: "", phone: "" });
+      await onRefresh();
+    }, "Akun juri dibuat. Aktifkan akun dan minta juri mengatur password melalui WhatsApp reset.");
+  };
+  const addJudge = (event) => {
+    event.preventDefault();
+    return run(() => api(`/admin/scoring/${eventId}/judges`, { method: "POST", body: JSON.stringify({ judgeId }) }), "Juri ditugaskan pada event.");
+  };
+
+  if (!events.length) return <><PanelTitle kicker="REKAPITULASI" title="Rekap penilaian" text="Pilih event yang sudah tercatat untuk mulai mengatur kriteria dan juri." /><p className="empty-inline">Belum ada event. Tambahkan event terlebih dahulu.</p></>;
+  return <div className="scoring-module">
+    <PanelTitle kicker="REKAPITULASI PENILAIAN" title="Kelola penilaian event" text="Kriteria, juri, nilai, dan ranking dibatasi pada event pilihan." />
+    <label className="scoring-event-picker">Event<select value={eventId} onChange={(event) => setEventId(event.target.value)}>{events.map((event) => <option key={event.id} value={event.id}>{event.name} · {event.status}</option>)}</select></label>
+    {error && <div className="form-alert form-alert-error" role="alert">{error}</div>}{message && <div className="form-alert" role="status">{message}</div>}
+    {busy && !scoring ? <p className="empty-inline">Memuat data penilaian...</p> : scoring && <>
+      <div className="dashboard-panel scoring-panel"><div className="panel-heading"><div><span className="eyebrow">PENGATURAN EVENT</span><h3>Kriteria penilaian</h3></div><button type="button" className="button button-outline button-small" disabled={busy} onClick={() => run(() => api(`/admin/scoring/${eventId}/default-criteria`, { method: "POST", body: "{}" }), "Kriteria bawaan PBB, Danton, Varfor, dan Kostum tersedia.")}>Tambah kriteria bawaan</button></div>
+        {scoring.criteria.map((criterion) => <div className="scoring-row" key={criterion.id}>
+          <strong>{criterion.name}</strong><span>Bobot {criterion.weight} · rentang {criterion.minScore}–{criterion.maxScore}</span>
+          <label><input type="checkbox" checked={criterion.active} disabled={busy} onChange={(event) => {
+            const used = scoring.participants.some((participant) => participant.scores.some((score) => score.criterionId === criterion.id && score.submitted > 0));
+            if (used && !window.confirm("Kriteria ini sudah memiliki nilai. Perubahan status akan menghitung ulang ranking sementara. Lanjutkan?")) return;
+            run(() => api(`/admin/scoring/${eventId}/criteria/${criterion.id}`, { method: "PATCH", body: JSON.stringify({ active: event.target.checked, confirmRecalculation: used }) }), "Status kriteria diperbarui.");
+          }} /> Aktif</label>
+          <details className="criterion-edit"><summary>Edit / hapus</summary>
+            <form className="scoring-inline-form" onSubmit={(event) => {
+              event.preventDefault(); const values = new FormData(event.currentTarget);
+              run(() => api(`/admin/scoring/${eventId}/criteria/${criterion.id}`, { method: "PATCH", body: JSON.stringify({ name: values.get("name"), weight: Number(values.get("weight")), minScore: Number(values.get("minScore")), maxScore: Number(values.get("maxScore")) }) }), "Kriteria diperbarui.");
+            }}>
+              <label>Nama<input name="name" required minLength="2" maxLength="80" defaultValue={criterion.name} /></label>
+              <label>Bobot<input name="weight" type="number" min="0.01" max="1000" step="0.01" required defaultValue={criterion.weight} /></label>
+              <label>Nilai minimum<input name="minScore" type="number" min="0" max="100000" step="any" required defaultValue={criterion.minScore} /></label>
+              <label>Nilai maksimum<input name="maxScore" type="number" min="0" max="100000" step="any" required defaultValue={criterion.maxScore} /></label>
+              <button className="button button-outline button-small" disabled={busy} type="submit">Simpan kriteria</button>
+              <button className="reject-button" disabled={busy} type="button" onClick={() => {
+                if (window.confirm(`Hapus kriteria ${criterion.name}?`)) run(() => api(`/admin/scoring/${eventId}/criteria/${criterion.id}`, { method: "DELETE" }), "Kriteria dihapus.");
+              }}>Hapus</button>
+            </form>
+          </details>
+        </div>)}
+        {!scoring.criteria.length && <p className="empty-inline">Kriteria belum diatur. Tambahkan kriteria bawaan atau buat kriteria sendiri.</p>}
+        <form className="scoring-inline-form" onSubmit={createCriterion}><label>Nama kriteria<input required minLength="2" maxLength="80" value={criterionName} onChange={(event) => setCriterionName(event.target.value)} /></label><label>Bobot<input type="number" min="0.01" step="0.01" max="1000" required value={criterionWeight} onChange={(event) => setCriterionWeight(event.target.value)} /></label><button className="button button-primary" disabled={busy || !eventId} type="submit">Tambah kriteria</button></form>
+      </div>
+      <div className="dashboard-panel scoring-panel"><div className="panel-heading"><div><span className="eyebrow">PENUGASAN</span><h3>Juri event</h3></div></div>
+        {scoring.judges.map((judge) => <div className="scoring-row" key={judge.id}><strong>{judge.name}</strong><span>{judge.email} · {judge.status}</span><button className="reject-button" disabled={busy} type="button" onClick={() => {
+          if (window.confirm(`Lepas penugasan ${judge.name} dari event? Nilai tersimpan tetap ada, tetapi tidak dihitung dalam ranking sampai juri ditugaskan kembali.`)) run(() => api(`/admin/scoring/${eventId}/judges/${judge.id}`, { method: "DELETE" }), "Penugasan juri dilepas.");
+        }}>Lepas</button><details className="criterion-edit"><summary>Edit data juri</summary><form className="scoring-inline-form" onSubmit={(event) => {
+          event.preventDefault(); const values = new FormData(event.currentTarget);
+          run(async () => { await api(`/admin/judges/${judge.id}`, { method: "PATCH", body: JSON.stringify({ name: values.get("name"), email: values.get("email"), phone: values.get("phone") }) }); await onRefresh(); }, "Data juri diperbarui.");
+        }}><label>Nama<input name="name" required minLength="2" maxLength="120" defaultValue={judge.name} /></label><label>Email<input name="email" required type="email" defaultValue={judge.email} /></label><label>WhatsApp<input name="phone" required type="tel" defaultValue={judge.phone || ""} /></label><button className="button button-outline button-small" disabled={busy} type="submit">Simpan data juri</button><small>Juri aktif dapat menggunakan fitur lupa password untuk mengatur atau mengganti akses melalui WhatsApp.</small></form></details></div>)}
+        {!scoring.judges.length && <p className="empty-inline">Belum ada juri yang ditugaskan.</p>}
+        <form className="scoring-inline-form" onSubmit={addJudge}><label>Juri aktif<select required value={judgeId} onChange={(event) => setJudgeId(event.target.value)}><option value="">Pilih juri</option>{judges.filter((judge) => !scoring.judges.some((assigned) => assigned.id === judge.id)).map((judge) => <option key={judge.id} value={judge.id}>{judge.name} · {judge.email}</option>)}</select></label><button className="button button-primary" disabled={busy || !judgeId} type="submit">Tugaskan juri</button></form>
+        <details className="scoring-create-judge"><summary>Buat akun juri</summary><form className="scoring-inline-form" onSubmit={createJudge}><label>Nama<input required minLength="2" maxLength="120" value={judgeForm.name} onChange={(event) => setJudgeForm({ ...judgeForm, name: event.target.value })} /></label><label>Email<input required type="email" value={judgeForm.email} onChange={(event) => setJudgeForm({ ...judgeForm, email: event.target.value })} /></label><label>Nomor WhatsApp<input required type="tel" value={judgeForm.phone} onChange={(event) => setJudgeForm({ ...judgeForm, phone: event.target.value })} /></label><button className="button button-outline" disabled={busy} type="submit">Buat akun pending</button></form></details>
+      </div>
+      <div className="dashboard-panel scoring-panel"><div className="panel-heading"><div><span className="eyebrow">RANKING SEMENTARA</span><h3>Hasil dari nilai tersimpan</h3></div><button type="button" className="button button-outline button-small" onClick={() => setShowRanking((open) => !open)}>{showRanking ? "Tutup ranking" : "Detail ranking sementara"}</button></div>
+        {showRanking && <><p className="dashboard-footnote">Metode: rata-rata nilai tiap kriteria antar juri, dikalikan bobot, lalu dijumlahkan. Peserta belum lengkap tidak diberi peringkat; nilai seri berbagi peringkat.</p>
+        {!scoring.participants.length ? <p className="empty-inline">Belum ada peserta yang disetujui untuk event ini.</p> : scoring.participants.map((participant) => <div className="scoring-rank-row" key={participant.registrationId}><strong>{participant.rank ? `#${participant.rank}` : "—"}</strong><div><b>{participant.teamName || participant.participantName}</b><small>{participant.scores.map((score) => `${score.name}: ${score.average === null ? "Belum dinilai" : score.average.toFixed(2)}`).join(" · ") || "Belum ada kriteria aktif"}</small></div><span>{participant.complete ? participant.total.toFixed(2) : "Belum lengkap"}</span></div>)}</>}
+      </div>
+    </>}
+  </div>;
 }
 
 function DashboardTools({ products = [], events = [], busyId, eventForm, setEventForm, onEventCreate, onProductUpdate }) {
@@ -760,8 +987,8 @@ function DashboardTools({ products = [], events = [], busyId, eventForm, setEven
         <label>Sekolah / institusi<input required minLength="2" maxLength="120" value={eventForm.institution} onChange={(event) => setEventForm({ ...eventForm, institution: event.target.value })} /></label>
         <label>Lokasi<input maxLength="200" value={eventForm.location} onChange={(event) => setEventForm({ ...eventForm, location: event.target.value })} /></label>
         <label>Poster (URL HTTPS)<input type="url" value={eventForm.posterUrl} onChange={(event) => setEventForm({ ...eventForm, posterUrl: event.target.value })} /></label>
-        <label>Mulai<input type="datetime-local" value={eventForm.startsAt} onChange={(event) => setEventForm({ ...eventForm, startsAt: event.target.value })} /></label>
-        <label>Selesai<input type="datetime-local" value={eventForm.endsAt} onChange={(event) => setEventForm({ ...eventForm, endsAt: event.target.value })} /></label>
+        <label>Unggah poster<input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setEventForm({ ...eventForm, posterFile: event.target.files?.[0] || null })} /><small>JPEG, PNG, atau WebP; maksimal 5 MB.</small></label>
+        <div className="event-date-list">{eventForm.schedules.map((date, index) => <div className="event-date-row" key={index}><label>Tanggal mulai<input type="datetime-local" value={date.startsAt} onChange={(event) => setEventForm({ ...eventForm, schedules: eventForm.schedules.map((item, i) => i === index ? { ...item, startsAt: event.target.value } : item) })} /></label><label>Tanggal selesai<input type="datetime-local" value={date.endsAt} onChange={(event) => setEventForm({ ...eventForm, schedules: eventForm.schedules.map((item, i) => i === index ? { ...item, endsAt: event.target.value } : item) })} /></label>{eventForm.schedules.length > 1 && <button type="button" className="reject-button" aria-label={`Hapus tanggal ${index + 1}`} onClick={() => setEventForm({ ...eventForm, schedules: eventForm.schedules.filter((_, i) => i !== index) })}><X size={15} /></button>}</div>)}<button className="text-link" type="button" onClick={() => setEventForm({ ...eventForm, schedules: [...eventForm.schedules, { startsAt: "", endsAt: "" }] })}><CalendarDays size={14} /> Tambah tanggal</button></div>
         <label>Harga tiket (IDR)<input type="number" min="0" max="100000000" value={eventForm.ticketPrice} onChange={(event) => setEventForm({ ...eventForm, ticketPrice: event.target.value })} /></label>
         <label>Harga vote (IDR)<input type="number" min="1000" max="10000000" value={eventForm.votePrice} onChange={(event) => setEventForm({ ...eventForm, votePrice: event.target.value })} /></label>
         <label className="event-description-field">Deskripsi<textarea maxLength="3000" rows="3" value={eventForm.description} onChange={(event) => setEventForm({ ...eventForm, description: event.target.value })} /></label>
@@ -809,7 +1036,7 @@ function EventModal({ event, loading, user, participantName, setParticipantName,
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [close]);
-  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}><section className="event-modal" role="dialog" aria-modal="true" aria-labelledby="event-modal-title"><button className="modal-close" onClick={close} type="button" aria-label="Tutup"><X size={19} /></button>{loading ? <div className="modal-loading"><span className="loader-orbit" /><p>Memuat detail event...</p></div> : <><div className="modal-cover"><span className="eyebrow">EVENT TERVERIFIKASI</span><span className="modal-cover-mark">RB</span></div><div className="modal-body"><span className="live-pill"><i /> {eventState(event)}</span><h2 id="event-modal-title">{event.name}</h2><p className="modal-institution">{event.institution}{event.location ? ` · ${event.location}` : ""}</p><div className="modal-meta"><span><CalendarDays size={15} />{formatDate(event.startsAt)}</span><span><Users size={15} />{event.participants?.length || event.participants || 0} peserta terverifikasi</span></div><p className="modal-description">{event.description || "Informasi event ini disediakan oleh penyelenggara Rekap Baris."}</p><div className="modal-tabs"><button className={activeMode === "overview" ? "is-active" : ""} type="button" onClick={() => setActiveMode("overview")}>Informasi</button><button className={activeMode === "participants" ? "is-active" : ""} type="button" onClick={() => setActiveMode("participants")}>Peserta & voting</button></div>{activeMode === "participants" ? <div className="participants-panel"><h3>Peserta Pasukan Terpopuler</h3>{event.participants?.length ? event.participants.map((participant, index) => <div className="participant-row" key={participant.id}><span className="participant-rank">{String(index + 1).padStart(2, "0")}</span><div><strong>{participant.name}</strong><small>{participant.teamName || "Peserta terverifikasi"}</small></div><span className="participant-votes"><Heart size={13} />{participant.votes} vote</span><button className="vote-button" onClick={() => onVote(participant.id)} disabled={busyId === participant.id} type="button">{busyId === participant.id ? "..." : <><Vote size={14} /> Vote</>}</button></div>) : <EmptyState icon={Vote} title="Peserta belum tersedia" text="Pendaftaran peserta akan muncul setelah diverifikasi." />}<button className="text-link" type="button" onClick={() => onReload()}>Perbarui daftar <ArrowRight size={14} /></button>{user && <div className="participant-register"><span className="eyebrow">DAFTARKAN PESERTA</span><input placeholder={`Nama peserta (default: ${user.name})`} value={participantName} onChange={(event) => setParticipantName(event.target.value)} /><input placeholder="Nama regu / pasukan" value={teamName} onChange={(event) => setTeamName(event.target.value)} /><button className="button button-outline" onClick={() => onRegister(event.id)} disabled={busyId === "participant-register"} type="button">Kirim pendaftaran</button></div>}</div> : <div className="event-purchase-box"><div><span className="eyebrow">TIKET PENONTON</span><strong>{event.ticketPrice ? rupiah(event.ticketPrice) : "Harga segera diumumkan"}</strong></div><label>Jumlah<select value={quantity} onChange={(event) => setQuantity(Number(event.target.value))}>{[1, 2, 3, 4, 5].map((value) => <option key={value}>{value}</option>)}</select></label><button className="button button-primary" type="button" onClick={() => event.ticketPrice > 0 ? onBuyTicket() : onMessage("Harga tiket belum tersedia untuk event ini.")}>{busyId === "ticket" ? "Menyiapkan QRIS..." : "Beli tiket dengan QRIS"} <ArrowRight size={15} /></button></div>}<p className="payment-footnote"><ShieldCheck size={14} /> Pembayaran aman via Midtrans QRIS. {user ? "" : <button type="button" onClick={onLogin}>Masuk untuk transaksi</button>}</p></div></>}</section></div>;
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}><section className="event-modal" role="dialog" aria-modal="true" aria-labelledby="event-modal-title"><button className="modal-close" onClick={close} type="button" aria-label="Tutup"><X size={19} /></button>{loading ? <div className="modal-loading"><span className="loader-orbit" /><p>Memuat detail event...</p></div> : <><div className="modal-cover"><span className="eyebrow">EVENT TERVERIFIKASI</span><span className="modal-cover-mark">RB</span></div><div className="modal-body"><span className="live-pill"><i /> {eventState(event)}</span><h2 id="event-modal-title">{event.name}</h2><p className="modal-institution">{event.institution}{event.location ? ` · ${event.location}` : ""}</p><div className="modal-meta"><span><CalendarDays size={15} />{event.schedules?.length ? event.schedules.map((date) => formatDate(date.startsAt)).join(' / ') : formatDate(event.startsAt)}</span><span><Users size={15} />{event.participants?.length || event.participants || 0} peserta terverifikasi</span></div><p className="modal-description">{event.description || "Informasi event ini disediakan oleh penyelenggara Rekap Baris."}</p><div className="modal-tabs"><button className={activeMode === "overview" ? "is-active" : ""} type="button" onClick={() => setActiveMode("overview")}>Informasi</button><button className={activeMode === "participants" ? "is-active" : ""} type="button" onClick={() => setActiveMode("participants")}>Peserta & voting</button></div>{activeMode === "participants" ? <div className="participants-panel"><h3>Peserta Pasukan Terpopuler</h3>{event.participants?.length ? event.participants.map((participant, index) => <div className="participant-row" key={participant.id}><span className="participant-rank">{String(index + 1).padStart(2, "0")}</span><div><strong>{participant.name}</strong><small>{participant.teamName || "Peserta terverifikasi"}</small></div><span className="participant-votes"><Heart size={13} />{participant.votes} vote</span><button className="vote-button" onClick={() => onVote(participant.id)} disabled={busyId === participant.id} type="button">{busyId === participant.id ? "..." : <><Vote size={14} /> Vote</>}</button></div>) : <EmptyState icon={Vote} title="Peserta belum tersedia" text="Pendaftaran peserta akan muncul setelah diverifikasi." />}<button className="text-link" type="button" onClick={() => onReload()}>Perbarui daftar <ArrowRight size={14} /></button>{user && <div className="participant-register"><span className="eyebrow">DAFTARKAN PESERTA</span><input placeholder={`Nama peserta (default: ${user.name})`} value={participantName} onChange={(event) => setParticipantName(event.target.value)} /><input placeholder="Nama regu / pasukan" value={teamName} onChange={(event) => setTeamName(event.target.value)} /><button className="button button-outline" onClick={() => onRegister(event.id)} disabled={busyId === "participant-register"} type="button">Kirim pendaftaran</button></div>}</div> : <div className="event-purchase-box"><div><span className="eyebrow">TIKET PENONTON</span><strong>{event.ticketPrice ? rupiah(event.ticketPrice) : "Harga segera diumumkan"}</strong></div><label>Jumlah<select value={quantity} onChange={(event) => setQuantity(Number(event.target.value))}>{[1, 2, 3, 4, 5].map((value) => <option key={value}>{value}</option>)}</select></label><button className="button button-primary" type="button" onClick={() => event.ticketPrice > 0 ? onBuyTicket() : onMessage("Harga tiket belum tersedia untuk event ini.")}>{busyId === "ticket" ? "Menyiapkan QRIS..." : "Beli tiket dengan QRIS"} <ArrowRight size={15} /></button></div>}<p className="payment-footnote"><ShieldCheck size={14} /> Pembayaran aman via Midtrans QRIS. {user ? "" : <button type="button" onClick={onLogin}>Masuk untuk transaksi</button>}</p></div></>}</section></div>;
 }
 
 function EmptyState({ icon: Icon, title, text }) {
