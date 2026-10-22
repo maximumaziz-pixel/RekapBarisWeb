@@ -446,6 +446,19 @@ function App() {
     }
   };
 
+  const updateProductVariant = async (id, stock) => {
+    setBusyId(`variant-${id}`);
+    try {
+      await api(`/admin/product-variants/${id}`, { method: "PATCH", body: JSON.stringify({ stock }) });
+      await Promise.all([refreshPublicData(), refreshDashboard()]);
+      setNotice("Stok varian merchandise berhasil diperbarui.");
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusyId("");
+    }
+  };
+
   const visibleEvents = useMemo(() => {
     const query = search.trim().toLowerCase();
     const filtered = events.filter((event) => {
