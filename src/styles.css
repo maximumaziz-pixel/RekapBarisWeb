@@ -143,6 +143,8 @@ h1 em, h2 em { color: var(--green); font-style: normal; }
 .trust-inner svg { color: var(--green); }
 
 .feature-section { padding-top: 106px; padding-bottom: 97px; }
+.home-events { padding-block: 76px; }
+.home-events-more { display: flex; justify-content: center; margin-top: 24px; }
 .section-heading { max-width: 550px; margin: 0 auto 38px; text-align: center; }
 .section-heading h2 { margin: 16px 0 12px; font: 750 clamp(31px, 4vw, 45px)/1.12 "Manrope", sans-serif; letter-spacing: -2px; }
 .section-heading p { max-width: 440px; margin: 0 auto; color: var(--muted); font-size: 12px; line-height: 1.85; }
@@ -264,6 +266,7 @@ h1 em, h2 em { color: var(--green); font-style: normal; }
 .dashboard-tool-card .panel-title { margin-bottom: 13px; }
 .dashboard-tool-card .form-alert { margin-bottom: 9px; }
 .event-admin-form { display: grid; grid-template-columns: repeat(2, 1fr); gap: 9px; }
+.event-admin-form .form-wide { grid-column: 1 / -1; }
 .event-admin-form label { display: grid; gap: 5px; color: var(--ink); font-size: 9px; font-weight: 700; }
 .event-admin-form input, .event-admin-form textarea { width: 100%; min-height: 37px; padding: 8px 10px; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 7px; font: 400 10px "DM Sans", sans-serif; }
 .event-admin-form textarea { min-height: 72px; resize: vertical; }
@@ -293,6 +296,9 @@ h1 em, h2 em { color: var(--green); font-style: normal; }
 .participant-register { display: grid; grid-template-columns: 1fr 1fr auto; align-items: end; gap: 7px; margin-top: 16px; padding: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 9px; }.participant-register .eyebrow { grid-column: 1 / -1; font-size: 8px; }.participant-register input { height: 34px; font-size: 9px; }.participant-register .button { min-height: 34px; padding-inline: 9px; font-size: 8px; }
 .event-purchase-box { display: grid; grid-template-columns: 1fr auto auto; align-items: end; gap: 12px; padding: 15px 0 4px; }.event-purchase-box > div { display: grid; gap: 4px; }.event-purchase-box > div strong { color: var(--green); font: 750 17px "Manrope", sans-serif; }.event-purchase-box .eyebrow { font-size: 7px; }.event-purchase-box > label { display: grid; gap: 4px; color: var(--muted); font-size: 8px; }.event-purchase-box select { height: 37px; padding: 0 8px; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }.event-purchase-box .button { min-height: 38px; padding-inline: 11px; font-size: 9px; }
 .payment-footnote { display: flex; align-items: center; gap: 6px; margin: 14px 0 0; color: var(--muted); font-size: 8px; }.payment-footnote > svg { color: var(--green); }.payment-footnote button { padding: 0; color: var(--green); background: none; border: 0; font-size: inherit; font-weight: 700; }.modal-loading { display: grid; justify-items: center; place-content: center; min-height: 380px; color: var(--muted); font-size: 11px; }
+.vote-checkout-backdrop { position: fixed; inset: 0; z-index: 120; display: grid; place-items: center; padding: 18px; background: rgb(10 24 18 / 56%); }
+.vote-checkout { position: relative; display: grid; gap: 14px; width: min(100%, 390px); padding: 28px; border: 1px solid var(--line); border-radius: 18px; background: var(--surface); box-shadow: 0 24px 80px rgb(0 0 0 / 20%); }
+.vote-checkout h3, .vote-checkout p { margin: 0; }.vote-checkout h3 { padding-right: 24px; font-family: var(--serif); font-size: 22px; }.vote-checkout p { color: var(--muted); font-size: 13px; }.vote-checkout label { display: grid; gap: 7px; font-size: 11px; font-weight: 700; }.vote-checkout select { width: 100%; padding: 11px 12px; border: 1px solid var(--line); border-radius: 9px; color: var(--ink); background: var(--surface); }.vote-total { display: flex; justify-content: space-between; align-items: center; padding-top: 12px; border-top: 1px solid var(--line); font-size: 12px; }.vote-total span { color: var(--muted); }.vote-checkout > small { color: #a15b2b; font-size: 11px; }
 
 .auth-modal { position: relative; display: grid; grid-template-columns: .9fr 1.1fr; width: min(850px, calc(100vw - 30px)); max-height: min(90vh, 820px); overflow: auto; color: var(--ink); background: var(--surface); border-radius: 17px; box-shadow: 0 30px 100px rgba(0,0,0,.3); animation: modal-in .24s cubic-bezier(.2,.8,.2,1) both; }
 .auth-watermark { position: absolute; right: -22px; bottom: 120px; width: 230px; opacity: .09; transform: rotate(-12deg); }
@@ -413,7 +419,9 @@ h1 em, h2 em { color: var(--green); font-style: normal; }
 .organizer-event-panel { grid-column: 1 / -1; }
 .organizer-event-row { padding: 8px 0; border-top: 1px solid var(--line); }
 .organizer-edit-form { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; padding: 10px; background: var(--bg); border-radius: 8px; }
+.event-poster-preview { grid-column: 1 / -1; width: min(100%, 360px); aspect-ratio: 1.72 / 1; object-fit: cover; border: 1px solid var(--line); border-radius: 8px; }
 .organizer-edit-form label { display: grid; gap: 5px; font-size: 9px; font-weight: 700; }
+.organizer-edit-form .form-wide { grid-column: 1 / -1; }
 .organizer-edit-form input, .organizer-edit-form textarea { width: 100%; min-height: 36px; padding: 8px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; }
 .organizer-edit-form label:last-of-type { grid-column: 1 / -1; }
 .organizer-edit-form > button { justify-self: start; }

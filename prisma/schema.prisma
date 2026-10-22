@@ -43,8 +43,16 @@ enum PaymentType {
 enum PaymentStatus {
   PENDING
   SETTLED
+  EXPIRED
   FAILED
+  CANCELLED
   REFUNDED
+}
+
+enum TicketStatus {
+  VALID
+  CHECKED_IN
+  CANCELLED
 }
 
 model User {
@@ -68,6 +76,8 @@ model User {
   payments           Payment[]
   judgeAssignments   JudgeAssignment[]
   scores             CompetitionScore[]
+  scoringFormatAssignments ScoringFormatJudge[]
+  createdScoringFormats ScoringFormat[]
 
   @@index([status, role])
 }
@@ -90,10 +100,14 @@ model Event {
   updatedAt          DateTime            @updatedAt
   registrations      EventRegistration[]
   payments           Payment[]
+  tickets            Ticket[]
   schedules          EventSchedule[]
   criteria           ScoringCriterion[]
   judgeAssignments   JudgeAssignment[]
   scores             CompetitionScore[]
+  scoringFormatId    String?
+  scoringFormat      ScoringFormat?    @relation(fields: [scoringFormatId], references: [id], onDelete: SetNull)
+  scoringFormatAppliedAt DateTime?
 
   @@index([status, startsAt])
   @@index([organizerId])
@@ -113,6 +127,7 @@ model EventRegistration {
   scores             CompetitionScore[]
 
   @@unique([eventId, participantName])
+  @@unique([eventId, userId])
   @@index([eventId, status])
 }
 
@@ -123,6 +138,8 @@ model EventSchedule {
   startsAt  DateTime
   endsAt    DateTime?
   createdAt DateTime @default(now())
+  payments  Payment[]
+  tickets   Ticket[]
 
   @@unique([eventId, startsAt])
   @@index([eventId, startsAt])
@@ -143,6 +160,45 @@ model ScoringCriterion {
 
   @@unique([eventId, name])
   @@index([eventId, active])
+}
+
+model ScoringFormat {
+  id        String                  @id @default(cuid())
+  name      String
+  createdById String
+  createdBy User                    @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt DateTime                @default(now())
+  updatedAt DateTime                @updatedAt
+  criteria  ScoringFormatCriterion[]
+  judges    ScoringFormatJudge[]
+  events    Event[]
+}
+
+model ScoringFormatCriterion {
+  id        String        @id @default(cuid())
+  formatId  String
+  format    ScoringFormat @relation(fields: [formatId], references: [id], onDelete: Cascade)
+  name      String
+  weight    Float         @default(1)
+  minScore  Float         @default(0)
+  maxScore  Float         @default(100)
+  active    Boolean       @default(true)
+  createdAt DateTime      @default(now())
+
+  @@unique([formatId, name])
+  @@index([formatId])
+}
+
+model ScoringFormatJudge {
+  id        String        @id @default(cuid())
+  formatId  String
+  format    ScoringFormat @relation(fields: [formatId], references: [id], onDelete: Cascade)
+  judgeId   String
+  judge     User          @relation(fields: [judgeId], references: [id], onDelete: Cascade)
+  createdAt DateTime      @default(now())
+
+  @@unique([formatId, judgeId])
+  @@index([judgeId, formatId])
 }
 
 model JudgeAssignment {
@@ -187,6 +243,21 @@ model Product {
   createdAt          DateTime     @default(now())
   updatedAt          DateTime     @updatedAt
   payments           Payment[]
+  variants           ProductVariant[]
+}
+
+model ProductVariant {
+  id        String    @id @default(cuid())
+  productId String
+  product   Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  size      String
+  stock     Int       @default(0)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  payments  Payment[]
+
+  @@unique([productId, size])
+  @@index([productId, stock])
 }
 
 model Payment {
@@ -204,10 +275,38 @@ model Payment {
   registration       EventRegistration? @relation(fields: [registrationId], references: [id], onDelete: SetNull)
   productId          String?
   product            Product?      @relation(fields: [productId], references: [id], onDelete: SetNull)
+  variantId          String?
+  variant            ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  scheduleId          String?
+  schedule            EventSchedule? @relation(fields: [scheduleId], references: [id], onDelete: Restrict)
+  buyerName           String?
+  buyerPhone          String?
+  unitPrice           Int?
+  itemName            String?
   midtransTransactionId String?
   createdAt          DateTime      @default(now())
   settledAt          DateTime?
+  tickets            Ticket[]
 
   @@index([userId, createdAt])
   @@index([type, status])
+}
+
+model Ticket {
+  id          String       @id @default(cuid())
+  code        String       @unique
+  paymentId   String
+  payment     Payment      @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  eventId     String
+  event       Event        @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  scheduleId  String
+  schedule    EventSchedule @relation(fields: [scheduleId], references: [id], onDelete: Restrict)
+  buyerName   String
+  buyerPhone  String
+  status      TicketStatus @default(VALID)
+  createdAt   DateTime     @default(now())
+  checkedInAt DateTime?
+
+  @@index([eventId, scheduleId, status])
+  @@index([paymentId])
 }

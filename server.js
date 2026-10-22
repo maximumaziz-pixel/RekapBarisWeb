@@ -496,10 +496,19 @@ app.get("/api/dashboard", requireAuth, asyncRoute(async (req, res) => {
         where: { userId: id },
         orderBy: { createdAt: "desc" },
         take: 20,
-        include: { event: { select: { name: true } }, product: { select: { name: true } } }
+        include: {
+          event: { select: { name: true } },
+          product: { select: { name: true } },
+          schedule: { select: { startsAt: true, endsAt: true } },
+          tickets: { select: { id: true, code: true, status: true, schedule: { select: { startsAt: true } } } }
+        }
       })
     ]);
-    return res.json({ role, institution, registrations, payments });
+    const adminContactPhone = process.env.ADMIN_PHONE || process.env.TEAM_PHONE || "";
+    return res.json({ role, institution, registrations, payments: payments.map((payment) => ({
+      ...payment,
+      ...(payment.type === "MERCH" && payment.status === "SETTLED" && adminContactPhone ? { adminContactPhone } : {})
+    })) });
   }
   if (role === "ORGANIZER") {
     const events = await prisma.event.findMany({
@@ -659,6 +668,20 @@ app.put("/api/events/:id/poster", requireAuth, validatePosterMime, posterUpload,
   res.json({ posterUrl: updated.posterUrl });
 }));
 
+app.post("/api/admin/products/image", requireAuth, requireStaff, validatePosterMime, posterUpload, asyncRoute(async (req, res) => {
+  if (!Buffer.isBuffer(req.body) || req.body.length === 0) throw apiError(400, "Pilih foto produk sebelum mengunggah.");
+  const mime = req.headers["content-type"]?.split(";")[0].toLowerCase();
+  const valid = mime === "image/png" ? req.body.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+    : mime === "image/jpeg" ? req.body[0] === 0xff && req.body[1] === 0xd8 && req.body[2] === 0xff
+    : req.body.toString("ascii", 0, 4) === "RIFF" && req.body.toString("ascii", 8, 12) === "WEBP";
+  if (!valid) throw apiError(415, "File harus berupa gambar JPEG, PNG, atau WebP yang valid.");
+  const extension = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" }[mime];
+  const filename = `${crypto.randomUUID()}.${extension}`;
+  await fs.mkdir(uploadPath, { recursive: true });
+  await fs.writeFile(path.join(uploadPath, filename), req.body, { flag: "wx", mode: 0o640 });
+  res.status(201).json({ imageUrl: `/uploads/${filename}` });
+}));
+
 app.post("/api/events/:id/register", requireAuth, asyncRoute(async (req, res) => {
   if (req.user.role !== "PARTICIPANT") {
     throw apiError(403, "Hanya akun peserta yang dapat mendaftar pada event.");
@@ -669,6 +692,11 @@ app.post("/api/events/:id/register", requireAuth, asyncRoute(async (req, res) =>
   }), req.body);
   const event = await prisma.event.findFirst({ where: { id: req.params.id, status: "APPROVED" }, select: { id: true } });
   if (!event) throw apiError(404, "Event tidak ditemukan atau belum tersedia.");
+  const existingRegistration = await prisma.eventRegistration.findUnique({
+    where: { eventId_userId: { eventId: event.id, userId: req.user.id } },
+    select: { id: true }
+  });
+  if (existingRegistration) throw apiError(409, "Akun Anda sudah terdaftar pada event ini.");
   try {
     const registration = await prisma.eventRegistration.create({
       data: {
@@ -680,7 +708,11 @@ app.post("/api/events/:id/register", requireAuth, asyncRoute(async (req, res) =>
     });
     res.status(201).json({ registration, message: "Pendaftaran peserta menunggu verifikasi penyelenggara/Admin." });
   } catch (error) {
-    if (error.code === "P2002") throw apiError(409, "Nama peserta tersebut sudah terdaftar pada event ini.");
+    if (error.code === "P2002") {
+      const target = error.meta?.target;
+      if (Array.isArray(target) && target.includes("userId")) throw apiError(409, "Akun Anda sudah terdaftar pada event ini.");
+      throw apiError(409, "Nama peserta tersebut sudah terdaftar pada event ini.");
+    }
     throw error;
   }
 }));
@@ -689,7 +721,7 @@ app.get("/api/merch", publicLimiter, asyncRoute(async (req, res) => {
   const products = await prisma.product.findMany({
     where: { active: true },
     orderBy: { createdAt: "desc" },
-    select: { id: true, name: true, description: true, imageUrl: true, price: true, stock: true }
+    select: { id: true, name: true, description: true, imageUrl: true, price: true, stock: true, variants: { select: { id: true, size: true, stock: true }, orderBy: { size: "asc" } } }
   });
   res.json({ products });
 }));
@@ -699,17 +731,31 @@ async function createPayment(req, res, type) {
   const input = parse(z.object({
     quantity: z.number().int().min(1).max(10).default(1),
     eventId: z.string().optional(),
+    scheduleId: z.string().optional(),
     registrationId: z.string().optional(),
-    productId: z.string().optional()
+    productId: z.string().optional(),
+    variantId: z.string().optional(),
+    buyerName: z.string().trim().min(2).max(120).optional(),
+    buyerPhone: z.string().trim().min(8).max(30).refine((value) => Boolean(normalizePhone(value)), "Masukkan nomor HP pembeli yang valid.").transform((value) => normalizePhone(value)).optional()
   }), req.body);
   let event = null;
+  let schedule = null;
   let product = null;
+  let variant = null;
   let unitPrice = 0;
+  let buyerName = input.buyerName || req.user.name;
+  let buyerPhone = input.buyerPhone || req.user.phone || "";
   if (type === "TICKET" || type === "VOTE") {
     if (!input.eventId) throw apiError(400, "Event wajib dipilih.");
     event = await prisma.event.findFirst({ where: { id: input.eventId, status: "APPROVED" } });
     if (!event) throw apiError(404, "Event tidak ditemukan atau belum tersedia.");
-    if (type === "TICKET") unitPrice = event.ticketPrice;
+    if (type === "TICKET") {
+      if (!input.scheduleId) throw apiError(400, "Tanggal pelaksanaan tiket wajib dipilih.");
+      schedule = await prisma.eventSchedule.findFirst({ where: { id: input.scheduleId, eventId: event.id } });
+      if (!schedule) throw apiError(400, "Tanggal tiket tidak tersedia untuk event ini.");
+      if (!input.buyerPhone && !req.user.phone) throw apiError(400, "Nomor HP pembeli wajib diisi.");
+      unitPrice = event.ticketPrice;
+    }
     if (type === "VOTE") {
       if (!input.registrationId) throw apiError(400, "Peserta yang akan divoting wajib dipilih.");
       const registration = await prisma.eventRegistration.findFirst({
@@ -723,6 +769,12 @@ async function createPayment(req, res, type) {
     if (!input.productId) throw apiError(400, "Produk wajib dipilih.");
     product = await prisma.product.findFirst({ where: { id: input.productId, active: true } });
     if (!product) throw apiError(404, "Produk tidak ditemukan.");
+    if (input.variantId) {
+      variant = await prisma.productVariant.findFirst({ where: { id: input.variantId, productId: product.id } });
+      if (!variant) throw apiError(400, "Ukuran produk tidak tersedia.");
+    } else if (await prisma.productVariant.count({ where: { productId: product.id } })) {
+      throw apiError(400, "Pilih ukuran produk sebelum melanjutkan.");
+    }
     unitPrice = product.price;
   }
   if (unitPrice < 1) throw apiError(400, "Harga belum tersedia untuk transaksi ini.");
@@ -732,10 +784,16 @@ async function createPayment(req, res, type) {
   try {
     payment = await prisma.$transaction(async (tx) => {
       if (product) {
-        const stock = await tx.product.updateMany({
-          where: { id: product.id, active: true, stock: { gte: input.quantity } },
-          data: { stock: { decrement: input.quantity } }
-        });
+        let stock;
+        if (variant) {
+          stock = await tx.productVariant.updateMany({ where: { id: variant.id, stock: { gte: input.quantity } }, data: { stock: { decrement: input.quantity } } });
+          if (stock.count === 1) {
+            const aggregateStock = await tx.product.updateMany({ where: { id: product.id, active: true, stock: { gte: input.quantity } }, data: { stock: { decrement: input.quantity } } });
+            if (aggregateStock.count !== 1) throw apiError(409, "Stok agregat produk tidak konsisten. Periksa inventaris produk.");
+          }
+        } else {
+          stock = await tx.product.updateMany({ where: { id: product.id, active: true, stock: { gte: input.quantity } }, data: { stock: { decrement: input.quantity } } });
+        }
         if (stock.count !== 1) throw apiError(409, "Stok produk tidak mencukupi.");
       }
       return tx.payment.create({
@@ -747,7 +805,13 @@ async function createPayment(req, res, type) {
           quantity: input.quantity,
           eventId: event?.id,
           registrationId: type === "VOTE" ? input.registrationId : undefined,
-          productId: product?.id
+          productId: product?.id,
+          variantId: variant?.id,
+          scheduleId: schedule?.id,
+          buyerName: type === "TICKET" ? buyerName : undefined,
+          buyerPhone: type === "TICKET" ? buyerPhone : undefined,
+          unitPrice,
+          itemName: type === "MERCH" ? `${product.name}${variant ? ` (${variant.size})` : ""}` : `${type === "VOTE" ? "Vote" : "Tiket"} ${event?.name || ""}`.trim().slice(0, 120)
         }
       });
     });
@@ -758,15 +822,15 @@ async function createPayment(req, res, type) {
     const transaction = await midtrans.createTransaction({
       transaction_details: { order_id: orderId, gross_amount: amount },
       customer_details: {
-        first_name: req.user.name,
+        first_name: type === "TICKET" ? buyerName : req.user.name,
         email: req.user.email,
-        ...(req.user.phone ? { phone: req.user.phone } : {})
+        ...((type === "TICKET" ? buyerPhone : req.user.phone) ? { phone: type === "TICKET" ? buyerPhone : req.user.phone } : {})
       },
       item_details: [{
-        id: type === "MERCH" ? product.id : (event?.id || type.toLowerCase()),
+        id: type === "MERCH" ? (variant?.id || product.id) : (event?.id || type.toLowerCase()),
         price: unitPrice,
         quantity: input.quantity,
-        name: type === "MERCH" ? product.name : `${type === "VOTE" ? "Vote" : "Tiket"} ${event.name}`.slice(0, 50)
+        name: type === "MERCH" ? `${product.name}${variant ? ` ${variant.size}` : ""}`.slice(0, 50) : `${type === "VOTE" ? "Vote" : `Tiket ${schedule?.startsAt.toLocaleDateString("id-ID")}`} ${event.name}`.slice(0, 50)
       }],
       enabled_payments: ["qris"]
     });
@@ -781,7 +845,11 @@ async function createPayment(req, res, type) {
   } catch (error) {
     await prisma.$transaction(async (tx) => {
       await tx.payment.update({ where: { id: payment.id }, data: { status: "FAILED" } });
-      if (product) await tx.product.update({ where: { id: product.id }, data: { stock: { increment: input.quantity } } });
+      if (variant) {
+        await tx.productVariant.update({ where: { id: variant.id }, data: { stock: { increment: input.quantity } } });
+        await tx.product.update({ where: { id: product.id }, data: { stock: { increment: input.quantity } } });
+      }
+      else if (product) await tx.product.update({ where: { id: product.id }, data: { stock: { increment: input.quantity } } });
     });
     console.error("Midtrans transaction creation failed:", error.message);
     throw apiError(502, "Transaksi QRIS tidak dapat dibuat. Silakan coba kembali.");
@@ -795,7 +863,7 @@ app.post("/api/payments/merch", requireAuth, asyncRoute((req, res) => createPaym
 app.get("/api/payments/:id", requireAuth, asyncRoute(async (req, res) => {
   const payment = await prisma.payment.findFirst({
     where: { id: req.params.id, userId: req.user.id },
-    select: { id: true, orderId: true, type: true, amount: true, quantity: true, status: true, createdAt: true }
+    include: { tickets: { select: { code: true, status: true, schedule: { select: { startsAt: true } } } } }
   });
   if (!payment) throw apiError(404, "Transaksi tidak ditemukan.");
   res.json({ payment });
@@ -826,6 +894,7 @@ app.post("/api/payments/midtrans/notification", asyncRoute(async (req, res) => {
   const failed = ["deny", "cancel", "expire"].includes(body.transaction_status) ||
     (body.transaction_status === "capture" && body.fraud_status === "challenge");
   if (!settled && !failed) return res.json({ ok: true });
+  const nextStatus = settled ? "SETTLED" : body.transaction_status === "expire" ? "EXPIRED" : body.transaction_status === "cancel" ? "CANCELLED" : "FAILED";
   await prisma.$transaction(async (tx) => {
     const payment = await tx.payment.findUnique({ where: { orderId: body.order_id } });
     if (!payment || payment.status !== "PENDING") return;
@@ -833,16 +902,35 @@ app.post("/api/payments/midtrans/notification", asyncRoute(async (req, res) => {
     if (!Number.isSafeInteger(amount) || amount !== payment.amount) {
       throw apiError(400, "Nilai pembayaran tidak sesuai dengan transaksi.");
     }
-    await tx.payment.update({
-      where: { id: payment.id },
+    const claimed = await tx.payment.updateMany({
+      where: { id: payment.id, status: "PENDING" },
       data: {
-        status: settled ? "SETTLED" : "FAILED",
+        status: nextStatus,
         settledAt: settled ? new Date() : null,
         midtransTransactionId: body.transaction_id
       }
     });
+    if (claimed.count !== 1) return;
+    if (settled && payment.type === "TICKET") {
+      if (payment.eventId && payment.scheduleId && payment.buyerName && payment.buyerPhone) {
+        await tx.ticket.createMany({
+          data: Array.from({ length: payment.quantity }, () => ({
+          code: `RB-${crypto.randomBytes(8).toString("hex").toUpperCase()}`,
+          paymentId: payment.id,
+          eventId: payment.eventId,
+          scheduleId: payment.scheduleId,
+          buyerName: payment.buyerName,
+          buyerPhone: payment.buyerPhone
+          }))
+        });
+      }
+    }
     if (failed && payment.productId) {
-      await tx.product.update({
+      if (payment.variantId) {
+        await tx.productVariant.update({ where: { id: payment.variantId }, data: { stock: { increment: payment.quantity } } });
+        await tx.product.update({ where: { id: payment.productId }, data: { stock: { increment: payment.quantity } } });
+      }
+      else await tx.product.update({
         where: { id: payment.productId },
         data: { stock: { increment: payment.quantity } }
       });
@@ -900,6 +988,38 @@ app.post("/api/admin/scoring/:eventId/default-criteria", requireAuth, requireSta
     update: {}
   })));
   res.json({ message: "Kriteria bawaan tersedia.", criteria: await prisma.scoringCriterion.findMany({ where: { eventId: event.id }, orderBy: { createdAt: "asc" } }) });
+}));
+
+app.get("/api/admin/scoring-formats", requireAuth, requireStaff, asyncRoute(async (req, res) => {
+  const formats = await prisma.scoringFormat.findMany({ orderBy: { updatedAt: "desc" }, include: { criteria: { orderBy: { createdAt: "asc" } }, judges: { include: { judge: { select: { id: true, name: true, email: true } } } } } });
+  res.json({ formats });
+}));
+
+app.post("/api/admin/scoring-formats/from-event", requireAuth, requireStaff, asyncRoute(async (req, res) => {
+  const input = parse(z.object({ eventId: z.string().min(1), name: z.string().trim().min(2).max(100) }), req.body);
+  const event = await prisma.event.findUnique({ where: { id: input.eventId }, include: { criteria: { orderBy: { createdAt: "asc" } }, judgeAssignments: true } });
+  if (!event) throw apiError(404, "Event tidak ditemukan.");
+  if (!event.criteria.length) throw apiError(400, "Tambahkan kriteria ke event sebelum menyimpan format.");
+  const format = await prisma.scoringFormat.create({ data: { name: input.name, createdById: req.user.id, criteria: { create: event.criteria.map(({ name, weight, minScore, maxScore, active }) => ({ name, weight, minScore, maxScore, active })) }, judges: { create: event.judgeAssignments.map(({ judgeId }) => ({ judgeId })) } }, include: { criteria: true, judges: true } });
+  res.status(201).json({ format });
+}));
+
+app.post("/api/admin/scoring-formats/apply", requireAuth, requireStaff, asyncRoute(async (req, res) => {
+  const input = parse(z.object({ eventId: z.string().min(1), formatId: z.string().min(1) }), req.body);
+  const [event, format] = await Promise.all([
+    prisma.event.findUnique({ where: { id: input.eventId }, include: { criteria: true } }),
+    prisma.scoringFormat.findUnique({ where: { id: input.formatId }, include: { criteria: { orderBy: { createdAt: "asc" } }, judges: true } })
+  ]);
+  if (!event || !format) throw apiError(404, "Event atau format penilaian tidak ditemukan.");
+  if (await prisma.competitionScore.count({ where: { eventId: event.id } })) throw apiError(409, "Format tidak dapat diterapkan setelah event memiliki nilai. Buat format baru untuk event lain.");
+  await prisma.$transaction(async (tx) => {
+    await tx.scoringCriterion.deleteMany({ where: { eventId: event.id } });
+    await tx.scoringCriterion.createMany({ data: format.criteria.map(({ name, weight, minScore, maxScore, active }) => ({ eventId: event.id, name, weight, minScore, maxScore, active })) });
+    await tx.judgeAssignment.deleteMany({ where: { eventId: event.id } });
+    if (format.judges.length) await tx.judgeAssignment.createMany({ data: format.judges.map(({ judgeId }) => ({ eventId: event.id, judgeId })) });
+    await tx.event.update({ where: { id: event.id }, data: { scoringFormatId: format.id, scoringFormatAppliedAt: new Date() } });
+  });
+  res.json({ message: "Format disalin ke konfigurasi event. Perubahan pada format utama tidak mengubah salinan ini.", eventId: event.id, formatId: format.id });
 }));
 
 app.get("/api/judge/events/:eventId/scoring", requireAuth, asyncRoute(async (req, res) => {
@@ -1106,19 +1226,26 @@ app.get("/api/admin/payments", requireAuth, requireStaff, asyncRoute(async (req,
 }));
 
 app.get("/api/admin/products", requireAuth, requireStaff, asyncRoute(async (req, res) => {
-  const products = await prisma.product.findMany({ orderBy: { createdAt: "desc" } });
+  const products = await prisma.product.findMany({ orderBy: { createdAt: "desc" }, include: { variants: { orderBy: { size: "asc" } } } });
   res.json({ products });
 }));
 
+const productImageSchema = z.string().trim().max(1000).optional().or(z.literal("")).refine((value) => !value || value.startsWith("/uploads/") || /^https?:\/\//i.test(value), "Foto produk tidak valid.");
+
 app.post("/api/admin/products", requireAuth, requireStaff, asyncRoute(async (req, res) => {
+  const variantSchema = z.array(z.object({ size: z.string().trim().min(1).max(24), stock: z.number().int().min(0).max(100000) })).max(30).default([]);
   const input = parse(z.object({
     name: z.string().trim().min(2).max(120),
     description: z.string().trim().max(2000).optional(),
-    imageUrl: z.string().trim().url().max(1000).optional().or(z.literal("")),
+    imageUrl: productImageSchema,
     price: z.number().int().min(1).max(100000000),
-    stock: z.number().int().min(0).max(100000)
+    stock: z.number().int().min(0).max(100000),
+    variants: variantSchema
   }), req.body);
-  const product = await prisma.product.create({ data: input });
+  const { variants, ...productData } = input;
+  if (new Set(variants.map((variant) => variant.size.toLowerCase())).size !== variants.length) throw apiError(400, "Ukuran produk tidak boleh berulang.");
+  const initialStock = variants.length ? variants.reduce((total, variant) => total + variant.stock, 0) : productData.stock;
+  const product = await prisma.product.create({ data: { ...productData, stock: initialStock, ...(variants.length ? { variants: { create: variants } } : {}) }, include: { variants: true } });
   res.status(201).json({ product });
 }));
 
@@ -1126,7 +1253,7 @@ app.patch("/api/admin/products/:id", requireAuth, requireStaff, asyncRoute(async
   const input = parse(z.object({
     name: z.string().trim().min(2).max(120).optional(),
     description: z.string().trim().max(2000).optional(),
-    imageUrl: z.string().trim().url().max(1000).optional().or(z.literal("")),
+    imageUrl: productImageSchema,
     price: z.number().int().min(1).max(100000000).optional(),
     stock: z.number().int().min(0).max(100000).optional(),
     active: z.boolean().optional()
@@ -1137,6 +1264,18 @@ app.patch("/api/admin/products/:id", requireAuth, requireStaff, asyncRoute(async
       throw error;
     });
   res.json({ product });
+}));
+
+app.patch("/api/admin/product-variants/:id", requireAuth, requireStaff, asyncRoute(async (req, res) => {
+  const input = parse(z.object({ stock: z.number().int().min(0).max(100000) }), req.body);
+  const variant = await prisma.$transaction(async (tx) => {
+    const existing = await tx.productVariant.findUnique({ where: { id: req.params.id } });
+    if (!existing) throw apiError(404, "Varian tidak ditemukan.");
+    const updated = await tx.productVariant.update({ where: { id: existing.id }, data: { stock: input.stock } });
+    await tx.product.update({ where: { id: existing.productId }, data: { stock: { increment: input.stock - existing.stock } } });
+    return updated;
+  });
+  res.json({ variant });
 }));
 
 app.use("/api", (req, res) => res.status(404).json({ error: "API tidak ditemukan." }));
