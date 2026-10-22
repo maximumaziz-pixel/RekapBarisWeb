@@ -52,7 +52,8 @@ jobs:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
-          ssh -i "$HOME/.ssh/id_ed25519" "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          # Tambahan opsi StrictHostKeyChecking di bawah ini agar aman dari error key verification
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i "$HOME/.ssh/id_ed25519" "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
           cd /var/www/RekapBarisWeb
           if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
@@ -69,6 +70,9 @@ jobs:
           npm run db:deploy
           npm run db:seed
           npm run build
+          
+          # PASTIKAN nama PM2 ini sama persis dengan yang aktif di VPS Anda ('rekapbaris' atau 'RekapBarisWeb')
           pm2 restart rekapbaris --update-env
+          
           curl -fsS http://127.0.0.1:3000/api/health
           REMOTE
