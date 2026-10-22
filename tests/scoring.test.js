@@ -5,9 +5,9 @@ const { scoringSummary } = require("../scoring");
 function eventFixture() {
   return {
     criteria: [
-      { id: "pbb", name: "PBB", weight: 2, active: true },
-      { id: "costume", name: "Kostum", weight: 1, active: true },
-      { id: "inactive", name: "Tidak dipakai", weight: 10, active: false }
+      { id: "pbb", name: "PBB", weight: 2, minScore: 0, maxScore: 100, active: true },
+      { id: "costume", name: "Kostum", weight: 1, minScore: 0, maxScore: 100, active: true },
+      { id: "inactive", name: "Tidak dipakai", weight: 10, minScore: 0, maxScore: 100, active: false }
     ],
     judgeAssignments: [{ judgeId: "j1" }, { judgeId: "j2" }],
     registrations: [
@@ -30,6 +30,7 @@ test("weighted ranking averages judges and ignores scores from unassigned judges
   const results = scoringSummary(eventFixture());
   assert.equal(results[0].registrationId, "r1");
   assert.equal(results[0].scores[0].average, 90);
+  assert.equal(results[0].scores[0].maxScore, 100);
   assert.equal(results[0].total, 250);
   assert.equal(results[2].scores[0].average, null);
   assert.equal(results[2].rank, null);

@@ -12,6 +12,8 @@ const midtransClient = require("midtrans-client");
 const { OAuth2Client } = require("google-auth-library");
 const { PrismaClient } = require("@prisma/client");
 const { z } = require("zod");
+const { loginAttemptKey } = require("./auth-rate-limit");
+const { classifyNotification, verifyNotificationSignature } = require("./midtrans-notification");
 const { hashPassword, isStrongPassword, verifyPassword } = require("./auth-password");
 const { normalizePhone, phoneLookupCandidates, whatsappRecipient } = require("./phone");
 const { getFonnteConfig, sendPasswordResetWhatsApp } = require("./whatsapp");
@@ -54,12 +56,33 @@ app.use(helmet({
 app.use(express.json({ limit: "32kb" }));
 app.use(cookieParser());
 
-const authLimiter = rateLimit({
+const registrationLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  limit: 30,
+  limit: 20,
   standardHeaders: "draft-7",
   legacyHeaders: false,
-  message: { error: "Terlalu banyak percobaan. Silakan coba lagi beberapa saat." }
+  message: { error: "Terlalu banyak permintaan pendaftaran. Silakan coba lagi beberapa saat." }
+});
+const passwordResetRequestLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 5,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { error: "Permintaan reset terlalu sering. Silakan coba lagi beberapa saat." }
+});
+const passwordResetLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 20,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { error: "Terlalu banyak percobaan reset password. Silakan coba lagi beberapa saat." }
+});
+const googleAuthLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 40,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { error: "Terlalu banyak permintaan Google OAuth. Silakan coba lagi beberapa saat." }
 });
 const publicLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -172,12 +195,22 @@ const eventSchema = z.object({
 }).refine((event) => !event.schedules || new Set(event.schedules.map((schedule) => schedule.startsAt)).size === event.schedules.length, {
   message: "Tanggal pelaksanaan tidak boleh duplikat."
 });
-const loginLimiter = rateLimit({
+const loginIpLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  limit: 10,
+  limit: 120,
   standardHeaders: "draft-7",
   legacyHeaders: false,
-  message: { error: "Terlalu banyak percobaan login dari jaringan ini. Silakan coba lagi setelah 15 menit atau gunakan reset password." }
+  skipSuccessfulRequests: true,
+  message: { error: "Terlalu banyak percobaan login dari jaringan ini. Silakan coba lagi beberapa saat." }
+});
+const loginAttemptLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 20,
+  keyGenerator: loginAttemptKey,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  message: { error: "Terlalu banyak percobaan gagal untuk akun ini. Silakan coba lagi beberapa saat." }
 });
 
 app.get("/api/health", asyncRoute(async (req, res) => {
@@ -207,14 +240,14 @@ const passwordAccountSchema = z.object({
   message: "Penyelenggara harus mengisi nama event."
 });
 
-app.post("/api/auth/register", authLimiter, asyncRoute(async (req, res) => {
+app.post("/api/auth/register", registrationLimiter, asyncRoute(async (req, res) => {
   const input = parse(passwordAccountSchema, req.body);
   const existing = await prisma.user.findUnique({ where: { email: input.email } });
   if (existing) throw apiError(409, "Email sudah terdaftar. Silakan masuk atau gunakan Google.");
 
   try {
     const passwordHash = await hashPassword(input.password);
-    await prisma.$transaction(async (tx) => {
+    const created = await prisma.$transaction(async (tx) => {
       const created = await tx.user.create({
         data: {
           name: input.name,
@@ -222,7 +255,8 @@ app.post("/api/auth/register", authLimiter, asyncRoute(async (req, res) => {
           phone: normalizePhone(input.phone),
           passwordHash,
           role: input.role,
-          status: "PENDING",
+          // Participant self-signups can continue straight into event registration; organizer accounts still require review.
+          status: input.role === "PARTICIPANT" ? "ACTIVE" : "PENDING",
           institution: input.role !== "JUDGE" ? input.institution : undefined,
           eventName: input.role === "ORGANIZER" ? input.eventName : undefined
         }
@@ -236,8 +270,17 @@ app.post("/api/auth/register", authLimiter, asyncRoute(async (req, res) => {
           }
         });
       }
+      return created;
     });
-    res.status(201).json({ status: "pending", message: "Akun Anda menunggu persetujuan Admin/Tim Rekap." });
+    if (created.status === "ACTIVE") {
+      signIn(res, created);
+      return res.status(201).json({
+        status: "active",
+        user: publicUser(created),
+        message: "Akun peserta berhasil dibuat. Anda sudah masuk."
+      });
+    }
+    res.status(201).json({ status: "pending", message: "Akun penyelenggara menunggu persetujuan Admin/Tim Rekap." });
   } catch (error) {
     if (error.code === "P2002") {
       const target = error.meta?.target;
@@ -249,7 +292,7 @@ app.post("/api/auth/register", authLimiter, asyncRoute(async (req, res) => {
   }
 }));
 
-app.post("/api/auth/login", loginLimiter, asyncRoute(async (req, res) => {
+app.post("/api/auth/login", loginIpLimiter, loginAttemptLimiter, asyncRoute(async (req, res) => {
   const input = parse(z.object({
     identifier: z.string().trim().min(1).max(254),
     password: z.string().min(1).max(128)
@@ -293,7 +336,7 @@ app.post("/api/auth/login", loginLimiter, asyncRoute(async (req, res) => {
 
 const genericResetMessage = "Jika nomor tersebut terdaftar, tautan reset password akan dikirim melalui WhatsApp.";
 
-app.post("/api/auth/forgot-password", authLimiter, asyncRoute(async (req, res) => {
+app.post("/api/auth/forgot-password", passwordResetRequestLimiter, asyncRoute(async (req, res) => {
   const input = parse(z.object({
     phone: z.string().trim().min(8).max(30)
       .refine((phone) => Boolean(normalizePhone(phone)), "Masukkan nomor HP yang valid.")
@@ -330,7 +373,7 @@ app.post("/api/auth/forgot-password", authLimiter, asyncRoute(async (req, res) =
   res.json({ message: genericResetMessage });
 }));
 
-app.post("/api/auth/reset-password", authLimiter, asyncRoute(async (req, res) => {
+app.post("/api/auth/reset-password", passwordResetLimiter, asyncRoute(async (req, res) => {
   const input = parse(z.object({
     token: z.string().min(32).max(128),
     password: passwordSchema
@@ -358,7 +401,7 @@ app.post("/api/auth/reset-password", authLimiter, asyncRoute(async (req, res) =>
   res.json({ message: "Password berhasil diperbarui. Silakan masuk." });
 }));
 
-app.get("/api/auth/google", authLimiter, asyncRoute(async (req, res) => {
+app.get("/api/auth/google", googleAuthLimiter, asyncRoute(async (req, res) => {
   if (!googleClientId || !googleClientSecret) throw apiError(503, "Login Google belum dikonfigurasi.");
   const input = parse(z.object({
     role: z.enum(["PARTICIPANT", "ORGANIZER"]).default("PARTICIPANT"),
@@ -397,7 +440,7 @@ app.get("/api/auth/google", authLimiter, asyncRoute(async (req, res) => {
   res.redirect(authorizationUrl);
 }));
 
-app.get("/api/auth/google/callback", authLimiter, asyncRoute(async (req, res) => {
+app.get("/api/auth/google/callback", googleAuthLimiter, asyncRoute(async (req, res) => {
   const clearOauthCookie = () => res.clearCookie(oauthCookieName, {
     httpOnly: true,
     secure: production || process.env.COOKIE_SECURE === "true",
@@ -451,7 +494,7 @@ app.get("/api/auth/google/callback", authLimiter, asyncRoute(async (req, res) =>
             email: profile.email.toLowerCase(),
             googleId: profile.sub,
             role: "PARTICIPANT",
-            status: "PENDING"
+            status: "ACTIVE"
           }
         });
       }
@@ -490,7 +533,7 @@ app.get("/api/dashboard", requireAuth, asyncRoute(async (req, res) => {
       prisma.eventRegistration.findMany({
         where: { userId: id },
         orderBy: { createdAt: "desc" },
-        include: { event: { select: { name: true, startsAt: true } } }
+        include: { event: { select: { name: true, institution: true, posterUrl: true, startsAt: true } } }
       }),
       prisma.payment.findMany({
         where: { userId: id },
@@ -821,6 +864,7 @@ async function createPayment(req, res, type) {
   try {
     const transaction = await midtrans.createTransaction({
       transaction_details: { order_id: orderId, gross_amount: amount },
+      callbacks: { finish: new URL(`/?paymentId=${encodeURIComponent(payment.id)}`, appUrl).toString() },
       customer_details: {
         first_name: type === "TICKET" ? buyerName : req.user.name,
         email: req.user.email,
@@ -866,7 +910,13 @@ app.get("/api/payments/:id", requireAuth, asyncRoute(async (req, res) => {
     include: { tickets: { select: { code: true, status: true, schedule: { select: { startsAt: true } } } } }
   });
   if (!payment) throw apiError(404, "Transaksi tidak ditemukan.");
-  res.json({ payment });
+  const adminContactPhone = process.env.ADMIN_PHONE || process.env.TEAM_PHONE || "";
+  res.json({
+    payment: {
+      ...payment,
+      ...(payment.type === "MERCH" && payment.status === "SETTLED" && adminContactPhone ? { adminContactPhone } : {})
+    }
+  });
 }));
 
 app.post("/api/payments/midtrans/notification", asyncRoute(async (req, res) => {
@@ -881,20 +931,18 @@ app.post("/api/payments/midtrans/notification", asyncRoute(async (req, res) => {
   }), req.body);
   const serverKey = process.env.MIDTRANS_SERVER_KEY;
   if (!serverKey) throw apiError(503, "Webhook pembayaran belum dikonfigurasi.");
-  const expected = crypto.createHash("sha512")
-    .update(`${body.order_id}${body.status_code}${body.gross_amount}${serverKey}`)
-    .digest("hex");
-  const providedBuffer = Buffer.from(body.signature_key.toLowerCase());
-  const expectedBuffer = Buffer.from(expected);
-  if (providedBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(providedBuffer, expectedBuffer)) {
+  if (!verifyNotificationSignature({
+    orderId: body.order_id,
+    statusCode: body.status_code,
+    grossAmount: body.gross_amount,
+    signatureKey: body.signature_key,
+    serverKey
+  })) {
     throw apiError(403, "Signature webhook tidak valid.");
   }
-  const settled = body.transaction_status === "settlement" ||
-    (body.transaction_status === "capture" && body.fraud_status !== "challenge");
-  const failed = ["deny", "cancel", "expire"].includes(body.transaction_status) ||
-    (body.transaction_status === "capture" && body.fraud_status === "challenge");
-  if (!settled && !failed) return res.json({ ok: true });
-  const nextStatus = settled ? "SETTLED" : body.transaction_status === "expire" ? "EXPIRED" : body.transaction_status === "cancel" ? "CANCELLED" : "FAILED";
+  const notification = classifyNotification(body.transaction_status, body.fraud_status);
+  if (!notification.settled && !notification.failed) return res.json({ ok: true });
+  const { settled, failed, status: nextStatus } = notification;
   await prisma.$transaction(async (tx) => {
     const payment = await tx.payment.findUnique({ where: { orderId: body.order_id } });
     if (!payment || payment.status !== "PENDING") return;
@@ -965,7 +1013,7 @@ async function getScoringEvent(eventId) {
     include: {
       criteria: { orderBy: { createdAt: "asc" } },
       registrations: { where: { status: "APPROVED" }, orderBy: { participantName: "asc" } },
-      judgeAssignments: { include: { judge: { select: { id: true, name: true, email: true, status: true } } } },
+      judgeAssignments: { include: { judge: { select: { id: true, name: true, email: true, phone: true, status: true } } } },
       scores: true
     }
   });
@@ -975,14 +1023,24 @@ async function getScoringEvent(eventId) {
 
 app.get("/api/admin/scoring/:eventId", requireAuth, requireStaff, asyncRoute(async (req, res) => {
   const event = await getScoringEvent(req.params.eventId);
-  res.json({ event: { id: event.id, name: event.name }, criteria: event.criteria, judges: event.judgeAssignments.map((assignment) => assignment.judge), participants: scoringSummary(event) });
+  res.json({
+    event: { id: event.id, name: event.name },
+    criteria: event.criteria,
+    judges: event.judgeAssignments.map((assignment) => assignment.judge),
+    participants: scoringSummary(event),
+    scoreEntries: event.scores.map(({ registrationId, criterionId, judgeId, value }) => ({ registrationId, criterionId, judgeId, value }))
+  });
 }));
 
 app.post("/api/admin/scoring/:eventId/default-criteria", requireAuth, requireStaff, asyncRoute(async (req, res) => {
+  const input = parse(z.object({
+    names: z.array(z.enum(["PBB", "Danton", "Varfor", "Kostum"])).max(4).optional()
+  }), req.body);
   const event = await prisma.event.findUnique({ where: { id: req.params.eventId }, select: { id: true } });
   if (!event) throw apiError(404, "Event tidak ditemukan.");
   const defaults = ["PBB", "Danton", "Varfor", "Kostum"];
-  await prisma.$transaction(defaults.map((name) => prisma.scoringCriterion.upsert({
+  const selectedCriteria = input.names ?? defaults;
+  await prisma.$transaction(selectedCriteria.map((name) => prisma.scoringCriterion.upsert({
     where: { eventId_name: { eventId: event.id, name } },
     create: { eventId: event.id, name },
     update: {}
@@ -1132,9 +1190,15 @@ app.patch("/api/admin/judges/:id", requireAuth, requireStaff, asyncRoute(async (
 }));
 
 app.post("/api/events/:eventId/scores", requireAuth, asyncRoute(async (req, res) => {
-  const input = parse(z.object({ registrationId: z.string().min(1), criterionId: z.string().min(1), value: z.number().finite() }), req.body);
-  const assignment = await prisma.judgeAssignment.findUnique({ where: { eventId_judgeId: { eventId: req.params.eventId, judgeId: req.user.id } } });
-  if (req.user.role !== "JUDGE" || !assignment) throw apiError(403, "Anda tidak ditugaskan untuk menilai event ini.");
+  const input = parse(z.object({ registrationId: z.string().min(1), criterionId: z.string().min(1), value: z.number().finite(), judgeId: z.string().min(1).optional() }), req.body);
+  const canManageScoring = ["ADMIN", "TEAM"].includes(req.user.role);
+  // Staff entries retain the assigned judge as scorer so ranking stays consistent across dashboard and judge input.
+  const judgeId = req.user.role === "JUDGE" ? req.user.id : canManageScoring ? input.judgeId : null;
+  if (!judgeId) throw apiError(403, "Pilih juri yang ditugaskan sebelum mencatat nilai.");
+  const assignment = await prisma.judgeAssignment.findFirst({
+    where: { eventId: req.params.eventId, judgeId, judge: { is: { role: "JUDGE", status: "ACTIVE" } } }
+  });
+  if (!assignment) throw apiError(403, "Juri tersebut tidak aktif atau tidak ditugaskan untuk menilai event ini.");
   const [registration, criterion] = await Promise.all([
     prisma.eventRegistration.findFirst({ where: { id: input.registrationId, eventId: req.params.eventId, status: "APPROVED" }, select: { id: true } }),
     prisma.scoringCriterion.findFirst({ where: { id: input.criterionId, eventId: req.params.eventId, active: true } })
@@ -1143,8 +1207,8 @@ app.post("/api/events/:eventId/scores", requireAuth, asyncRoute(async (req, res)
   if (!criterion) throw apiError(404, "Kriteria aktif tidak ditemukan pada event ini.");
   if (input.value < criterion.minScore || input.value > criterion.maxScore) throw apiError(400, `Nilai harus berada pada rentang ${criterion.minScore} sampai ${criterion.maxScore}.`);
   const score = await prisma.competitionScore.upsert({
-    where: { registrationId_criterionId_judgeId: { registrationId: registration.id, criterionId: criterion.id, judgeId: req.user.id } },
-    create: { eventId: req.params.eventId, registrationId: registration.id, criterionId: criterion.id, judgeId: req.user.id, value: input.value },
+    where: { registrationId_criterionId_judgeId: { registrationId: registration.id, criterionId: criterion.id, judgeId } },
+    create: { eventId: req.params.eventId, registrationId: registration.id, criterionId: criterion.id, judgeId, value: input.value },
     update: { value: input.value }
   });
   res.json({ score });

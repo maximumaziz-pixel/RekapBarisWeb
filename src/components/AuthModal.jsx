@@ -6,7 +6,7 @@ const roles = [
   { id: "ORGANIZER", label: "Penyelenggara", icon: Flag },
 ];
 
-export default function AuthModal({ mode, setMode, close, error, resetToken, onCredentialAuth }) {
+export default function AuthModal({ mode, setMode, close, error, resetToken, eventRegistration = false, joinedEventName = "", onCredentialAuth }) {
   const [role, setRole] = useState("PARTICIPANT");
   const [institution, setInstitution] = useState("");
   const [eventName, setEventName] = useState("");
@@ -98,7 +98,9 @@ export default function AuthModal({ mode, setMode, close, error, resetToken, onC
         <div className="auth-heading">
           <span className="eyebrow">REKAP BARIS / AKUN</span>
           <h2 id="auth-heading">{title}</h2>
-          <p>{mode === "register" ? "Lengkapi data sesuai peran, atau buat akun peserta melalui Google."
+          <p>{mode === "register" ? eventRegistration
+            ? `Buat akun peserta untuk melanjutkan pendaftaran${joinedEventName ? ` ke ${joinedEventName}` : " event"}.`
+            : "Lengkapi data sesuai peran, atau buat akun peserta melalui Google."
             : mode === "forgot-password" ? "Masukkan nomor WhatsApp yang terdaftar di akun Anda."
               : mode === "reset-password" ? "Tautan reset berlaku selama 60 menit."
                 : "Masuk dengan email, nomor HP, atau username Admin/Tim Rekap."}</p>
@@ -106,10 +108,10 @@ export default function AuthModal({ mode, setMode, close, error, resetToken, onC
         {(formError || error) && <div className="form-alert form-alert-error" role="alert">{formError || error}</div>}
         <form className="auth-form" onSubmit={submitWithPassword}>
           {mode === "register" && <>
-            <div className="role-picker">
+            {!eventRegistration && <div className="role-picker">
               <span>Daftar sebagai</span>
               <div>{roles.map(({ id, label, icon: Icon }) => <button type="button" onClick={() => setRole(id)} className={role === id ? "is-active" : ""} key={id}><Icon size={17} />{label}</button>)}</div>
-            </div>
+            </div>}
             <label className="auth-field">Nama lengkap<input autoComplete="name" maxLength="120" minLength="2" onChange={(event) => setName(event.target.value)} required value={name} /></label>
             <label className="auth-field">Nomor HP<input autoComplete="tel" maxLength="30" onChange={(event) => setPhone(event.target.value)} pattern="[+0-9 ()-]{8,30}" required title="Gunakan 8–15 digit nomor telepon." type="tel" value={phone} /></label>
             <small className="field-caption">Gunakan nomor WhatsApp aktif; format internasional disarankan, contoh +62812...</small>
@@ -143,7 +145,7 @@ export default function AuthModal({ mode, setMode, close, error, resetToken, onC
               <span className="google-mark" aria-hidden="true">G</span>{mode === "register" ? "Daftar dengan Google sebagai peserta" : "Masuk dengan Google"}<ArrowRight size={16} />
             </button>
           </>}
-          {mode === "register" && <p className="auth-consent">Akun baru menunggu persetujuan Admin/Tim Rekap.</p>}
+          {mode === "register" && <p className="auth-consent">{eventRegistration ? "Setelah mendaftar, Anda akan langsung masuk dan terdaftar pada event ini." : "Akun peserta langsung aktif; akun penyelenggara menunggu persetujuan Admin/Tim Rekap."}</p>}
           {mode !== "reset-password" && <p className="auth-switch">
             {mode === "register" ? "Sudah punya akun?" : mode === "login" ? "Belum punya akun?" : "Ingat password?"}{" "}
             <button type="button" onClick={() => mode === "register" ? switchMode() : setMode("login")}>{mode === "register" ? "Masuk" : "Kembali ke masuk"}</button>

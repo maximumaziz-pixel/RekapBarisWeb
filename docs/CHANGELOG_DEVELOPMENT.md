@@ -2,6 +2,53 @@
 
 Catatan ini mencatat perubahan RekapBarisWeb yang dibuat selama pekerjaan revisi.
 
+## 2026-10-22 — Penyelesaian alur transaksi QRIS
+
+### Perubahan
+
+- Event yang dibuka dari tab E-Voting langsung menampilkan daftar peserta dan aksi vote; tab tiket tetap membuka pilihan tanggal dan pembelian tiket.
+- Checkout Midtrans mengarahkan kembali ke transaksi milik pengguna. Aplikasi memeriksa status notifikasi dan menampilkan hasil tertunda/berhasil/gagal.
+- Hasil pembayaran menampilkan jumlah vote, tiket beserta kode terbit, atau nomor kontak admin untuk konfirmasi pengiriman merchandise yang lunas.
+- Tombol checkout tiket mengarahkan pengguna yang belum masuk ke autentikasi; pilihan ukuran merchandise awal memakai varian yang masih memiliki stok.
+- Verifikasi signature dan pemetaan status notifikasi Midtrans dipisahkan ke helper yang memiliki tes unit.
+
+### Status verifikasi
+
+- `npm run build`: berhasil.
+- `npm run test:auth`: berhasil, termasuk tes signature dan pemetaan status webhook.
+- `npm run check`: berhasil.
+- Pembayaran sandbox/live dan notifikasi gateway nyata belum dijalankan; konfigurasi credentials serta URL notifikasi Midtrans tetap diperlukan.
+
+## 2026-10-22 — Dashboard rekap penilaian
+
+### Perubahan
+
+- Dashboard Admin/Tim menempatkan pembuatan event dan database peserta di tab Event, serta katalog dan kontrol stok di tab Merchandise.
+- Rekap penilaian dipisah menjadi tab **Konfigurasi Format Nilai** dan **Rekap Penilaian**; konfigurasi menyediakan pilihan kriteria bawaan, kriteria kustom, pengelolaan/penugasan juri, dan penerapan format ke event.
+- Tab rekap menampilkan event dan peserta sebagai baris yang dapat dipilih, menyediakan input nilai per kriteria untuk juri yang ditugaskan, serta ranking sementara.
+- Admin/Tim dapat mencatat nilai dengan memilih juri aktif yang memang ditugaskan; skor tetap tercatat atas nama juri agar perhitungan ranking konsisten dengan input juri.
+- Error pemuatan database peserta kini ditampilkan di tab Event, bukan menghasilkan error referensi state yang tidak tersedia.
+
+### Status verifikasi
+
+- Build produksi, pemeriksaan sintaks server, validasi Prisma, seluruh tes Node, dan pemeriksaan whitespace dijalankan setelah perubahan.
+- Pencatatan skor dan pembayaran tetap memerlukan verifikasi fungsional pada akun/event yang sudah memiliki data.
+
+## 2026-10-22 — Beranda event dan pendaftaran peserta
+
+### Perubahan
+
+- Beranda menempatkan direktori event terverifikasi sebagai konten utama dan menampilkan seluruh event yang tersedia beserta poster atau placeholder saat poster belum diunggah.
+- Pendaftaran dari detail event menyimpan event yang dipilih selama proses autentikasi. Pendaftaran peserta baru otomatis membuat akun aktif dan masuk; akun penyelenggara tetap menunggu persetujuan.
+- Akun peserta baru dari Google juga aktif, sehingga pendaftaran event yang tertunda dapat dilanjutkan setelah OAuth kembali ke aplikasi.
+- Dashboard peserta memiliki menu `List Event` dengan poster, jadwal, satuan, dan status pendaftaran; pendaftaran beberapa event tetap memakai relasi akun-event yang sudah tersedia.
+
+### Status verifikasi
+
+- `npm run build`: berhasil.
+- `npm run test:auth`: berhasil.
+- `npm run check`: berhasil.
+
 ## 2026-10-22 — Audit awal dan daftar event beranda
 
 ### Audit
@@ -107,3 +154,16 @@ Catatan ini mencatat perubahan RekapBarisWeb yang dibuat selama pekerjaan revisi
 - Smoke check lokal: `/api/health` merespons sehat; `/api/events` dan `/api/merch` merespons tanpa error dan masing-masing saat ini berisi 0 event serta 0 produk. UI memakai keadaan kosong, tanpa membuat data contoh.
 - Vite merespons HTTP 200 di `http://localhost:5173/`.
 - Pembayaran Midtrans live dan webhook nyata belum diuji; verifikasi gateway masih memerlukan kredensial dan notifikasi dari environment Midtrans.
+
+## 2026-10-22 — Deploy VPS manual saja
+
+### Perubahan
+
+- Menghapus `.github/workflows/deploy.yml`, satu-satunya workflow yang menjalankan deploy VPS otomatis pada push ke `main` atau melalui GitHub Actions manual.
+- README tidak lagi menginstruksikan setup workflow atau secrets deploy GitHub Actions. Instruksi deployment SSH/PM2 manual dan `start.sh` tetap ada.
+- Tidak ada perubahan aplikasi, skema database, data, atau alur build/test lokal.
+
+### Status
+
+- `git diff --check`: berhasil.
+- Penghapusan workflow berlaku di GitHub setelah perubahan repo ini dikirim ke branch utama. Tidak ada deployment VPS yang dijalankan dari workspace ini.

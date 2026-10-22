@@ -11,6 +11,7 @@ Platform manajemen event perlombaan, pendaftaran peserta, e-voting, e-ticketing,
 - Registrasi peserta dan penyelenggara; akun juri dibuat oleh Admin/Tim. Login email/nomor HP/password, reset password melalui WhatsApp, dan Google OAuth opsional.
 - Dashboard terpisah untuk Admin, Tim Rekap, peserta, penyelenggara, dan juri dengan akses data sesuai role.
 - Dashboard Admin/Tim untuk ringkasan, akun, event, peserta, pembayaran, serta stok/produk.
+- Dashboard penilaian memisahkan konfigurasi format dari rekap. Admin/Tim dapat mencatat nilai dengan memilih juri aktif yang ditugaskan, sedangkan juri memasukkan nilai dari dashboard juri.
 - Jadwal event lebih dari satu hari, halaman pengajuan dan edit event penyelenggara, serta modul rekap nilai berbasis event untuk Admin/Tim dan juri yang ditugaskan.
 - Tombol chat WhatsApp Admin yang tersedia pada semua halaman.
 - Express menyajikan UI, aset `public/`, dan berkas `UPLOAD_DIR` melalui `/uploads/`.
@@ -136,7 +137,7 @@ Skema terbaru menambahkan tabel `EventSchedule`, `ScoringCriterion`, `JudgeAssig
    https://rekapbaris.com/api/auth/google/callback
    ```
 
-Pendaftaran password meminta nama, email, nomor HP, dan asal satuan untuk peserta; data yang sama ditambah nama event untuk penyelenggara. Pendaftaran juri publik dinonaktifkan; akun juri harus disediakan oleh Admin/Tim. Pendaftaran Google membuat akun peserta berstatus menunggu persetujuan dan tidak meminta atau menerima role istimewa. Password minimal 8 karakter serta wajib mengandung huruf, angka, dan simbol (spasi saja tidak dihitung sebagai simbol); password disimpan sebagai hash scrypt. Akun baru berstatus menunggu persetujuan Admin/Tim. Login mendukung email/nomor HP; Admin/Tim juga dapat memakai nama username dari environment. Google memerlukan email terverifikasi dan kredensial OAuth yang benar. Seed membuat akun staf aktif dengan password dari `ADMIN_PASSWORD` dan `TEAM_PASSWORD`; role staf tidak dapat dipilih dari formulir publik.
+Pendaftaran password meminta nama, email, nomor HP, dan asal satuan untuk peserta; data yang sama ditambah nama event untuk penyelenggara. Pendaftaran juri publik dinonaktifkan; akun juri harus disediakan oleh Admin/Tim. Akun peserta baru dari password atau Google langsung aktif dan masuk, sehingga dapat melanjutkan pendaftaran event; akun penyelenggara tetap menunggu persetujuan Admin/Tim. Pendaftaran Google tidak meminta atau menerima role istimewa. Password minimal 8 karakter serta wajib mengandung huruf, angka, dan simbol (spasi saja tidak dihitung sebagai simbol); password disimpan sebagai hash scrypt. Login mendukung email/nomor HP; Admin/Tim juga dapat memakai nama username dari environment. Google memerlukan email terverifikasi dan kredensial OAuth yang benar. Seed membuat akun staf aktif dengan password dari `ADMIN_PASSWORD` dan `TEAM_PASSWORD`; role staf tidak dapat dipilih dari formulir publik.
 
 Lupa password mengirim reset ke nomor WhatsApp yang terdaftar. Respons dibuat generik agar nomor akun tidak dapat ditebak; token acak disimpan dalam bentuk hash, berlaku satu jam, hanya dapat digunakan sekali, dan sesi lama dicabut setelah reset. Nomor pengguna harus dapat menerima pesan WhatsApp. Dashboard peserta menampilkan pendaftaran dan transaksi miliknya; penyelenggara mengelola event miliknya; juri hanya melihat event yang ditugaskan kepada akun tersebut. Admin dan Tim Rekap mengatur kriteria, menugaskan juri, melihat nilai, dan memantau ranking sementara per event. Nilai tiap kriteria dirata-ratakan antarjuri yang ditugaskan lalu dikalikan bobot; peserta yang belum mendapat nilai pada semua kriteria aktif ditandai belum lengkap dan tidak diberi peringkat. Nilai seri berbagi peringkat.
 
@@ -155,7 +156,7 @@ Jika Google menampilkan `401: invalid_client`, periksa Client ID dan Client Secr
 4. Uji pembayaran berhasil, kedaluwarsa, pembatalan, stok produk, dan status transaksi dengan akun Sandbox.
 5. Setelah akun production disetujui, ganti key Sandbox dengan key Production dan set `MIDTRANS_IS_PRODUCTION=true`. Jangan mencampur pasangan key Sandbox dan Production.
 
-Server memvalidasi signature notifikasi dan jumlah pembayaran sebelum menandai transaksi lunas. Kunci rahasia tidak dikirim ke frontend.
+Server memvalidasi signature notifikasi dan jumlah pembayaran sebelum menandai transaksi lunas. Setelah kembali dari halaman Midtrans, aplikasi memeriksa status transaksi; tiket baru diterbitkan setelah notifikasi settlement terverifikasi. Pembayaran merchandise yang berhasil menampilkan nomor kontak Admin/Tim dari `ADMIN_PHONE` atau `TEAM_PHONE` jika sudah dikonfigurasi. Kunci rahasia tidak dikirim ke frontend.
 
 ## 5. Deploy ke VPS Biznet Gio — Ubuntu 22.04
 
@@ -394,24 +395,9 @@ curl -fsS http://127.0.0.1:3000/api/health
 
 Perintah dump menyimpan cadangan database di home direktori pengguna SSH sebelum pembaruan skema; `umask 077` membatasi akses file cadangan. `set -e` dan `test -s` menghentikan proses jika backup gagal atau kosong. `db:seed` memperbarui akun staf dan hash password dari `.env`. Setelah health check berhasil, buka `https://rekapbaris.com` dan muat ulang paksa browser. Jika aplikasi belum pulih, periksa `pm2 status` dan `pm2 logs rekapbaris --lines 100`; jangan menghapus atau mengganti `.env` production.
 
-## Automated deploy ke VPS melalui GitHub Actions
-
-Repository menyertakan workflow [`.github/workflows/deploy.yml`](./.github/workflows/deploy.yml). Workflow berjalan otomatis saat commit di-push ke `main`, atau dapat dijalankan manual dari tab **Actions → Deploy to VPS → Run workflow**. Workflow membuat backup database, mengambil commit terbaru, memasang dependency, menerapkan schema, seed akun staf, build frontend, restart PM2, lalu memeriksa health endpoint.
-
-Siapkan VPS terlebih dahulu: aplikasi harus berada di `/var/www/RekapBarisWeb`, branch `main` harus clean, akun deploy dapat menjalankan `sudo -u postgres pg_dump rekapbaris` tanpa prompt, Node/npm, Git, PostgreSQL, dan PM2 tersedia, dan `.env` production telah diisi lengkap. Tambahkan GitHub repository secrets berikut melalui **Settings → Secrets and variables → Actions → New repository secret**:
-
-| Secret | Isi |
-| --- | --- |
-| `DEPLOY_HOST` | IP atau hostname VPS |
-| `DEPLOY_USER` | User SSH deploy |
-| `DEPLOY_SSH_KEY` | Private SSH key khusus deployment |
-| `DEPLOY_KNOWN_HOSTS` | Host key VPS yang fingerprint-nya sudah diverifikasi |
-
-Batasi SSH key ke akses yang diperlukan, lindungi secrets, dan jangan gunakan `StrictHostKeyChecking=no`. Commit ke `main` akan menjalankan deploy; log dan hasilnya terlihat pada tab **Actions**. Jika workflow berhenti karena worktree VPS berubah, periksa perubahan tersebut secara manual dan jangan menghapusnya tanpa inspeksi.
-
 ## Pembaruan manual ke VPS
 
-Setelah commit di-push ke `main`, sambungkan ke VPS via SSH dan pastikan `.env` production tidak ditimpa. Akun staf wajib punya email, nomor WhatsApp, dan password yang berbeda; password minimal 8 karakter serta mengandung huruf, angka, dan simbol. `FONNTE_TOKEN` yang valid diperlukan agar tautan reset dapat terkirim.
+Deploy ke VPS dilakukan manual melalui instruksi ini. Setelah perubahan ini berada di branch utama, repo tidak lagi memiliki workflow yang memicu deploy otomatis. Sambungkan ke VPS via SSH dan pastikan `.env` production tidak ditimpa. Akun staf wajib punya email, nomor WhatsApp, dan password yang berbeda; password minimal 8 karakter serta mengandung huruf, angka, dan simbol. `FONNTE_TOKEN` yang valid diperlukan agar tautan reset dapat terkirim.
 
 ```bash
 cd /var/www/RekapBarisWeb
