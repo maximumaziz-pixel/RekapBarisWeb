@@ -448,6 +448,89 @@ Perintah di atas mengasumsikan perubahan sudah ada di `origin/main`, folder chec
 
 Jika skema berubah, buat backup database terlebih dahulu, tinjau file `prisma/schema.prisma`, lalu jalankan `npm run db:deploy` secara terpisah sebelum build/restart. `db:deploy` memakai `prisma db push`, bukan migrasi terkontrol; jangan jalankan otomatis tanpa meninjau dampaknya dan memastikan `DATABASE_URL` di VPS menunjuk ke database production yang benar. Jalankan `npm run db:seed` hanya bila memang perlu memperbarui akun Admin/Tim dari environment. Jika health check gagal, periksa `pm2 status`, `pm2 logs rekapbaris --lines 100`, dan `journalctl -u nginx` sebelum mencoba update lagi.
 
+### Ringkasan aman: commit, GitHub, lalu deploy VPS
+
+Tidak ada rangkaian perintah yang dapat menjamin “anti gagal” untuk semua kondisi. Gunakan pemeriksaan di setiap tahap dan jangan lanjut bila perintah gagal. Screenshot yang menunjukkan **“Terjadi kesalahan pada server”** adalah error aplikasi/API, bukan pesan Git; setelah deploy, gunakan langkah diagnosis di bagian bawah.
+
+#### 1. Commit dan push semua perubahan project dari PowerShell VS Code
+
+Jalankan dari root repository project yang benar. Ulangi untuk setiap project/repository yang ingin diperbarui:
+
+```powershell
+Get-Location
+git remote -v
+git branch --show-current
+git status --short
+```
+
+Pastikan folder dan `origin` benar, branch adalah `main`, dan tinjau setiap perubahan termasuk file baru. Jangan masukkan `.env`, secret, file backup, log, atau data pribadi. Bila semua perubahan memang ingin dirilis:
+
+```powershell
+git add -A
+git diff --cached --check
+git diff --cached --stat
+git diff --cached
+```
+
+Berhenti dan perbaiki jika pemeriksaan menampilkan error. Pastikan staged diff hanya berisi file yang memang akan dirilis, lalu:
+
+```powershell
+git commit -m "Jelaskan perubahan yang dirilis"
+git status --short
+git push origin main
+```
+
+Pastikan `git status --short` kosong setelah commit. Jika branch bukan `main`, jangan jalankan perintah push di atas apa adanya: push branch aktif dengan `git push -u origin nama-branch`, lalu gabungkan Pull Request ke `main` sebelum deploy. Jangan force-push. Jika ada konflik atau penolakan push, berhenti dan tinjau riwayat; jangan menghapus perubahan untuk memaksa proses.
+
+#### 2. Ambil semua commit GitHub dan build di VPS
+
+SSH ke VPS yang melayani project tersebut. Sesuaikan path project bila berbeda:
+
+```bash
+cd /var/www/RekapBarisWeb
+git status --short
+git branch --show-current
+git remote -v
+```
+
+Lanjut hanya jika status bersih, branch `main`, dan `origin` benar. Jika status tidak kosong, jangan pull atau menimpa file lokal; tinjau dan simpan perubahan itu dahulu. Kemudian jalankan satu per satu, dan lanjut hanya bila perintah sebelumnya berhasil:
+
+```bash
+git pull --ff-only origin main
+npm ci
+npm run db:validate
+npm run db:generate
+npm run build
+pm2 describe rekapbaris
+pm2 restart rekapbaris --update-env
+curl -fsS http://127.0.0.1:3000/api/health
+curl -fsS https://rekapbaris.com/api/health
+```
+
+`git pull --ff-only` mengambil seluruh commit terbaru dari `origin/main`, termasuk semua file terlacak yang berubah di commit tersebut. Ia tidak mengirim `.env` atau `uploads/` ke Git; file lokal itu harus tetap ada di VPS. `pm2 describe` memastikan nama proses yang dipakai benar sebelum restart. Jika nama proses berbeda, gunakan nama yang ditampilkan `pm2 status`.
+
+Jika rilis mengubah `prisma/schema.prisma`, jangan langsung menjalankan `db:deploy` secara otomatis. Buat backup PostgreSQL production di lokasi aman, periksa isi perubahan skema, pastikan `.env` VPS menunjuk ke database yang benar, lalu jalankan `npm run db:deploy` secara sengaja sebelum build dan restart. `db:deploy` memakai `prisma db push` dan dapat mengubah database.
+
+#### 3. Jika website menampilkan “Terjadi kesalahan pada server”
+
+Jangan mengulang `git pull`, menghapus file, atau menjalankan `git reset` sebagai percobaan. Periksa kondisi server dan ambil log terbaru:
+
+```bash
+pm2 status
+pm2 logs rekapbaris --lines 100
+curl -i http://127.0.0.1:3000/api/health
+curl -i https://rekapbaris.com/api/health
+nginx -t
+journalctl -u nginx --since "15 minutes ago" --no-pager
+```
+
+- Jika pemeriksaan health lokal gagal, periksa log PM2, status PostgreSQL, dan konfigurasi `.env`/`DATABASE_URL`; jangan tampilkan atau kirim nilai secret saat meminta bantuan.
+- Jika health lokal berhasil tetapi URL publik gagal, periksa Nginx, DNS, sertifikat HTTPS, dan proxy ke port `3000`.
+- Jika health lokal dan publik berhasil tetapi satu fitur masih menampilkan error, periksa log PM2 tepat saat fitur dicoba dan respons endpoint terkait. Toast umum di browser tidak menunjukkan akar masalah dengan sendirinya.
+- Jika poster/gambar rusak tetapi halaman berjalan, periksa keberadaan file di `UPLOAD_DIR`, nilai `UPLOAD_DIR` di `.env`, dan izin baca/tulis user proses aplikasi. Folder `uploads/` tidak diperbarui oleh Git.
+
+Jangan bagikan `.env`, token, password, URL database lengkap, atau isi data peserta di log/screenshot bantuan. Setelah masalah ditemukan dan diperbaiki, ulangi build/restart yang diperlukan dan verifikasi kedua URL health kembali.
+
 ## Perintah Proyek
 
 | Perintah | Fungsi |
