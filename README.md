@@ -1,183 +1,196 @@
 # Rekap Baris
 
-Platform manajemen event perlombaan, pendaftaran peserta, e-voting, e-ticketing, dan merchandise. Aplikasi memakai React + Vite + Tailwind CSS, Express, PostgreSQL, Prisma, Google OAuth 2.0, dan pembayaran QRIS Midtrans.
+Rekap Baris adalah aplikasi manajemen event perlombaan: pendaftaran peserta, penilaian dan klasemen, e-voting, e-ticketing, serta merchandise. Frontend memakai React dan Vite; backend memakai Express; database memakai PostgreSQL melalui Prisma.
 
-## Fitur
+README ini menjelaskan setup dari komputer baru, menjalankan aplikasi, deploy manual ke VPS Biznet Gio Ubuntu 22.04, serta memperbarui aplikasi tanpa menimpa perubahan lokal atau file konfigurasi.
 
-- Beranda responsif dengan tema biru-emas dan toggle mode terang/gelap.
-- Direktori event dengan pencarian, filter status, dan pengurutan.
-- Pendaftaran peserta yang dapat diverifikasi staf.
-- E-voting, tiket penonton, dan merchandise melalui Midtrans Snap QRIS.
-- Registrasi peserta dan penyelenggara; akun juri dibuat oleh Admin/Tim. Login email/nomor HP/password, reset password melalui WhatsApp, dan Google OAuth opsional.
-- Dashboard terpisah untuk Admin, Tim Rekap, peserta, penyelenggara, dan juri dengan akses data sesuai role.
-- Dashboard Admin/Tim untuk ringkasan, akun, event, peserta, pembayaran, serta stok/produk.
-- Dashboard penilaian memisahkan konfigurasi format dari rekap. Admin/Tim dapat mencatat nilai dengan memilih juri aktif yang ditugaskan, sedangkan juri memasukkan nilai dari dashboard juri.
-- Jadwal event lebih dari satu hari, halaman pengajuan dan edit event penyelenggara, serta modul rekap nilai berbasis event untuk Admin/Tim dan juri yang ditugaskan.
-- Tombol chat WhatsApp Admin yang tersedia pada semua halaman.
-- Express menyajikan UI, aset `public/`, dan berkas `UPLOAD_DIR` melalui `/uploads/`.
+## Ringkasan Proyek
 
-## Isi proyek
+- `server.js` menjalankan API Express, autentikasi, OAuth, pembayaran, dan file statis.
+- `src/` berisi aplikasi React. Dalam development, Vite berjalan di port `5173` dan meneruskan `/api` ke Express di port `3000`.
+- `prisma/schema.prisma` adalah skema PostgreSQL saat ini.
+- `npm run db:deploy` menjalankan `prisma db push`; perintah ini menyinkronkan skema Prisma ke database dan bukan `prisma migrate deploy`.
+- Folder `prisma/migrations/` berisi SQL historis. Scripts proyek saat ini tidak menjalankan folder itu. Jangan menjalankan migrasi historis secara manual pada database aktif tanpa rencana dan backup.
+- `npm run db:seed` membuat atau memperbarui akun Admin dan Tim dari environment.
+- `.env` menyimpan rahasia dan tidak boleh masuk Git. `ttdj/.env.example` adalah template lokal.
+- `uploads/` menyimpan poster dan berkas unggahan; folder ini terpisah dari database dan harus dibackup sendiri.
 
-```text
-RekapBarisWeb/
-├── ttdj/.env.example        Template konfigurasi (tidak berisi secret)
-├── ecosystem.config.js      Konfigurasi PM2
-├── index.html
-├── package.json
-├── postcss.config.js
-├── server.js                Express API, OAuth, pembayaran, dan static file server
-├── tailwind.config.js
-├── vite.config.js
-├── prisma/
-│   ├── schema.prisma
-│   └── seed.js               Membuat/memperbarui akun Admin dan Tim
-├── public/
-│   └── logo.svg
-└── src/
-    ├── App.jsx
-    ├── main.jsx
-    ├── styles.css
-    └── components/
+## Persiapan Komputer Lokal
+
+Untuk Windows, gunakan PowerShell atau terminal VS Code.
+
+1. Pasang Node.js 20 LTS. `package.json` mendukung Node.js `>=20 <25`.
+2. Pasang Git.
+3. Pasang PostgreSQL 15 atau 16 dan pastikan layanan PostgreSQL berjalan. pgAdmin boleh digunakan untuk membuat database.
+4. Pasang VS Code bila belum tersedia.
+
+Periksa instalasi:
+
+```powershell
+node --version
+npm --version
+git --version
+psql --version
 ```
 
-File rahasia `.env` berada di root lokal/production dan diabaikan Git. Jangan mengirim atau memasukkan file itu ke Git.
+## Mulai dari Clone Baru
 
-## 1. Persiapan komputer
-
-Langkah-langkah berikut ditujukan untuk pemula. Untuk Windows, buka PowerShell atau Terminal dari VS Code.
-
-1. **Pasang Node.js.** Unduh versi LTS 20.x dari [nodejs.org](https://nodejs.org/), jalankan installer, lalu buka terminal baru dan periksa:
-
-   ```powershell
-   node --version
-   npm --version
-   ```
-
-   Proyek memerlukan Node.js 20 atau lebih baru (sebelum Node.js 25).
-2. **Pasang Git.** Unduh dari [git-scm.com](https://git-scm.com/downloads), lalu verifikasi dengan `git --version`.
-3. **Pasang Visual Studio Code.** Unduh dari [code.visualstudio.com](https://code.visualstudio.com/). Buka folder proyek melalui **File → Open Folder**.
-4. **Siapkan PostgreSQL.** Pasang PostgreSQL 15 atau 16 dari [postgresql.org/download](https://www.postgresql.org/download/) (installer Windows dari EnterpriseDB juga tersedia). Ingat password yang dibuat untuk user `postgres`.
-5. **Siapkan akun integrasi.**
-   - Buat project Google Cloud, aktifkan Google Identity/OAuth, lalu buat OAuth Client ID jenis **Web application**.
-   - Buat akun [Midtrans Sandbox](https://dashboard.sandbox.midtrans.com/) untuk pengujian. Jangan gunakan Server Key production saat development.
-   - Tentukan nomor WhatsApp Admin dalam format internasional, misalnya `62812...` (tanpa `+`).
-
-## 2. Unduh dan pasang aplikasi
-
-Clone repositori dari terminal:
+Jika repository belum ada di komputer:
 
 ```powershell
 git clone https://github.com/maximumaziz-pixel/RekapBarisWeb.git
-cd RekapBarisWeb
+Set-Location .\RekapBarisWeb
 code .
 ```
 
-Jika folder proyek sudah tersedia, cukup buka folder itu dan lanjut ke langkah konfigurasi.
+Jika folder proyek sudah tersedia, buka folder itu dan lanjutkan. Jangan menghapus folder lama sebelum membackup perubahan kode, `.env`, dan `uploads/` yang masih diperlukan.
 
-Salin template environment menjadi `.env`:
+### 1. Buat database lokal
 
-```powershell
-Copy-Item .\ttdj\.env.example .env
-```
-
-Buka `.env` di VS Code, lalu isi `DATABASE_URL`, `JWT_SECRET`, Google OAuth (opsional), Midtrans, nomor WhatsApp Admin/Tim (`ADMIN_PHONE`/`TEAM_PHONE`), `VITE_ADMIN_WHATSAPP` untuk tombol chat publik, serta nama, email, dan password Admin/Tim. `VITE_ADMIN_WHATSAPP` harus berupa digit nomor dengan kode negara tanpa tanda `+`, misalnya `62812...`. Contoh URL database lokal:
-
-```text
-DATABASE_URL="postgresql://rekapbaris:password-anda@localhost:5432/rekapbaris?schema=public"
-```
-
-Password yang mengandung karakter khusus URL (seperti `@`, `#`, atau `/`) harus di-encode. Ganti nilai contoh `JWT_SECRET` dengan string acak panjang; jangan gunakan nilai contoh untuk production. Isi `ADMIN_EMAIL` dan `TEAM_EMAIL` dengan email unik yang dikelola masing-masing staf, lalu atur `ADMIN_PASSWORD` dan `TEAM_PASSWORD` dengan password acak berbeda, minimal 8 karakter, dan mengandung huruf, angka, serta simbol. Nama dari `ADMIN_NAME` dan `TEAM_NAME` dapat dipakai sebagai username login staf. Nilai `@example.com` pada template hanyalah placeholder.
-
-### Buat database lokal
-
-Di pgAdmin (ikut terpasang dengan PostgreSQL), klik kanan **Databases → Create → Database**, beri nama `rekapbaris`, lalu simpan. Atau buka SQL Shell (psql) dan jalankan:
+Di pgAdmin, buat user PostgreSQL dan database, atau jalankan di SQL Shell/psql sebagai user yang memiliki hak membuat role dan database:
 
 ```sql
-CREATE USER rekapbaris WITH PASSWORD 'password-anda';
+CREATE USER rekapbaris WITH PASSWORD 'GANTI_DENGAN_PASSWORD_LOKAL';
 CREATE DATABASE rekapbaris OWNER rekapbaris;
 ```
 
-Sesuaikan username/password pada `DATABASE_URL`. Jangan membuka port database lokal ke jaringan publik.
+Gunakan password database yang berbeda dari password akun aplikasi. Jangan membuka port PostgreSQL ke internet. Jika user atau database sudah ada, jangan menjalankan perintah `CREATE` lagi; periksa database yang tersedia terlebih dahulu.
 
-### Pasang dependensi dan jalankan
- 
+### 2. Buat environment lokal
+
+Di PowerShell, salin template hanya jika `.env` belum ada:
+
 ```powershell
-npm install
+if (!(Test-Path .\.env)) { Copy-Item .\ttdj\.env.example .\.env } else { Write-Error ".env sudah ada; jangan menimpanya." }
+```
+
+Buka `.env` dan ganti placeholder. Untuk development lokal, pertahankan:
+
+```dotenv
+PORT=3000
+APP_URL=http://localhost:3000
+COOKIE_SECURE=false
+DATABASE_URL=postgresql://rekapbaris:PASSWORD_LOKAL@localhost:5432/rekapbaris?schema=public
+MIDTRANS_IS_PRODUCTION=false
+```
+
+`JWT_SECRET` wajib berisi rahasia acak minimal 32 karakter. `DATABASE_URL` harus mengarah ke database lokal yang baru dibuat. Encode karakter khusus pada password database sebagai URL encoding, atau gunakan password yang aman dan mudah direpresentasikan dalam URL.
+
+| Environment | Wajib | Catatan |
+| --- | --- | --- |
+| `DATABASE_URL` | Ya | PostgreSQL lokal; periksa nama host dan database sebelum reset atau seed. |
+| `JWT_SECRET` | Ya | Minimal 32 karakter acak. Jangan gunakan nilai contoh di production. |
+| `ADMIN_NAME`, `ADMIN_EMAIL`, `ADMIN_PHONE`, `ADMIN_PASSWORD` | Ya untuk seed | Data akun Admin. |
+| `TEAM_NAME`, `TEAM_EMAIL`, `TEAM_PHONE`, `TEAM_PASSWORD` | Ya untuk seed | Harus berbeda dari akun Admin. Nomor telepon juga harus berbeda dan valid. Password minimal 8 karakter dengan huruf, angka, dan simbol. |
+| `APP_URL`, `COOKIE_SECURE` | Ya untuk login lokal yang benar | Lokal: `http://localhost:3000` dan `false`. Production HTTPS: URL domain dan `true`. |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_CALLBACK_URL` | Opsional | Untuk Google OAuth. Callback lokal: `http://localhost:3000/api/auth/google/callback`. Daftarkan URL yang sama persis di Google Cloud. |
+| `MIDTRANS_SERVER_KEY`, `MIDTRANS_CLIENT_KEY`, `MIDTRANS_IS_PRODUCTION` | Opsional | Gunakan key Sandbox dan `false` untuk pengujian. |
+| `FONNTE_TOKEN` | Opsional | Diperlukan agar reset password dapat dikirim melalui Fonnte. Simpan hanya di `.env` server. |
+| `ADMIN_PHONE`, `TEAM_PHONE` | Seed dan kontak | Nomor staf dalam format internasional. Masing-masing harus berbeda. |
+| `VITE_ADMIN_WHATSAPP` | Opsional | Nomor tombol chat publik, digit dengan kode negara tanpa tanda `+`. |
+| `UPLOAD_DIR` | Opsional | Default-nya folder `uploads/` pada root proyek. Pastikan dapat ditulis oleh proses Node. |
+
+Jangan menaruh secret server di variabel `VITE_*`; variabel tersebut dapat dimasukkan ke bundle frontend. Jangan mengunggah `.env`, key pembayaran, token Fonnte, atau backup database ke Git.
+
+### 3. Install dan jalankan
+
+Gunakan lockfile repository untuk instalasi yang konsisten:
+
+```powershell
+npm ci
+npm run db:validate
 npm run db:setup
 npm run dev
 ```
 
-Vite menampilkan alamat frontend (biasanya `http://localhost:5173`) dan Express API berjalan pada `http://localhost:3000`. Buka alamat Vite di browser. Untuk build production lokal:
+`db:setup` menjalankan generate Prisma Client, `prisma db push`, lalu seed akun staf. Gunakan pada database lokal kosong atau database yang memang sudah dibackup dan disetujui untuk disinkronkan. Seed akan membuat/memperbarui akun Admin dan Tim sesuai `.env`.
+
+Saat `npm run dev` berjalan, buka `http://localhost:5173`. API Express berjalan di `http://localhost:3000`; pemeriksaan health tersedia di `http://localhost:3000/api/health`. Hentikan proses development dengan `Ctrl+C`.
+
+Perintah pemeriksaan lain:
 
 ```powershell
 npm run build
-npm start
+npm run check
+npm run test:auth
 ```
 
-`npm start` memerlukan database yang dapat diakses. Pemeriksaan cepat: buka `http://localhost:3000/api/health`; hasil sukses berisi `{"ok":true,...}`.
+`npm start` menjalankan Express dan membutuhkan build frontend (`npm run build`) serta database yang dapat diakses.
 
-> `db:deploy` memakai `prisma db push` tanpa flag penghapusan data otomatis. Tetap buat backup sebelum perubahan skema, terutama pada database yang berisi data penting.
+`start.sh` adalah wrapper shell untuk setup/start Linux: script menjalankan install, generate, `db push`, seed, build, lalu prune development dependencies dan memulai PM2 atau `npm start`. Script ini bukan reset dan bukan deployment yang aman untuk dijalankan tanpa meninjau target `DATABASE_URL`; jangan gunakan sebagai shortcut pada database production yang belum dibackup.
 
-Skema terbaru menambahkan tabel `EventSchedule`, `ScoringCriterion`, `JudgeAssignment`, dan `CompetitionScore` secara aditif. Setelah meninjau perubahan skema dan membuat backup database, jalankan `npm run db:deploy` untuk menerapkannya. Perintah ini tidak dijalankan otomatis saat perubahan kode. Ranking sementara memakai rata-rata nilai juri per kriteria, dikalikan bobot lalu dijumlahkan; nilai seri berbagi peringkat dan peserta dengan kriteria aktif yang belum dinilai tidak diberi peringkat.
+### Jika instalasi npm lama atau gagal
 
-## 3. Konfigurasi Google OAuth
+`prisma` dan `@prisma/client` dipatok di `package.json` pada versi yang sama, yaitu `6.19.0`. Clone baru cukup memakai `npm ci`; jangan menambahkan Prisma lagi dengan versi terbaru secara bebas. Instalasi pertama dapat mengunduh engine Prisma sehingga lamanya dipengaruhi koneksi registry npm, akses ke server unduhan engine, cache, dan pemindaian antivirus Windows.
 
-1. Di [Google Cloud Console](https://console.cloud.google.com/), pilih project dan konfigurasi OAuth consent screen serta domain aplikasi.
-2. Buat **Credentials → Create Credentials → OAuth client ID → Web application**.
-3. Untuk uji lokal tambahkan Authorized redirect URI:
+Jika tidak ada kemajuan selama beberapa menit, buka terminal lain dan periksa apakah masih ada proses npm aktif. Setelah memastikan proses install yang macet sudah dihentikan, coba:
 
-   ```text
-   http://localhost:3000/api/auth/google/callback
-   ```
+```powershell
+npm ping
+npm cache verify
+npm ci --verbose
+```
 
-4. Salin Client ID dan Client Secret ke `GOOGLE_CLIENT_ID` dan `GOOGLE_CLIENT_SECRET` di `.env`.
-5. `GOOGLE_CALLBACK_URL` harus sama persis dengan URI yang terdaftar dan route aplikasi. Saat production gunakan HTTPS, misalnya:
+Jangan hapus `package-lock.json` untuk mengatasi install lambat. `npm ci` membangun ulang `node_modules` sesuai lockfile dan dapat menghapus folder `node_modules` lama, tetapi tidak menghapus database, `.env`, atau `uploads/`. Saat meminta bantuan, bagikan bagian akhir error; hapus token, URL database, dan credential dari log terlebih dahulu.
 
-   ```text
-   https://rekapbaris.com/api/auth/google/callback
-   ```
+## Integrasi Opsional
 
-Pendaftaran password meminta nama, email, nomor HP, dan asal satuan untuk peserta; data yang sama ditambah nama event untuk penyelenggara. Pendaftaran juri publik dinonaktifkan; akun juri harus disediakan oleh Admin/Tim. Akun peserta baru dari password atau Google langsung aktif dan masuk, sehingga dapat melanjutkan pendaftaran event; akun penyelenggara tetap menunggu persetujuan Admin/Tim. Pendaftaran Google tidak meminta atau menerima role istimewa. Password minimal 8 karakter serta wajib mengandung huruf, angka, dan simbol (spasi saja tidak dihitung sebagai simbol); password disimpan sebagai hash scrypt. Login mendukung email/nomor HP; Admin/Tim juga dapat memakai nama username dari environment. Google memerlukan email terverifikasi dan kredensial OAuth yang benar. Seed membuat akun staf aktif dengan password dari `ADMIN_PASSWORD` dan `TEAM_PASSWORD`; role staf tidak dapat dipilih dari formulir publik.
+### Google OAuth
 
-Lupa password mengirim reset ke nomor WhatsApp yang terdaftar. Respons dibuat generik agar nomor akun tidak dapat ditebak; token acak disimpan dalam bentuk hash, berlaku satu jam, hanya dapat digunakan sekali, dan sesi lama dicabut setelah reset. Nomor pengguna harus dapat menerima pesan WhatsApp. Dashboard peserta menampilkan pendaftaran dan transaksi miliknya; penyelenggara mengelola event miliknya; juri hanya melihat event yang ditugaskan kepada akun tersebut. Admin dan Tim Rekap mengatur kriteria, menugaskan juri, melihat nilai, dan memantau ranking sementara per event. Nilai tiap kriteria dirata-ratakan antarjuri yang ditugaskan lalu dikalikan bobot; peserta yang belum mendapat nilai pada semua kriteria aktif ditandai belum lengkap dan tidak diberi peringkat. Nilai seri berbagi peringkat.
+Buat OAuth Client ID bertipe **Web application** di Google Cloud. Daftarkan callback yang persis sama dengan `GOOGLE_CALLBACK_URL`:
 
-Jika Google menampilkan `401: invalid_client`, periksa Client ID dan Client Secret dari OAuth client **Web application** yang sama. Pastikan secret tidak kedaluwarsa/terhapus, `GOOGLE_CALLBACK_URL` sama persis dengan Authorized redirect URI (termasuk `/api/auth/google/callback`), dan restart proses Node/PM2 sesudah mengubah `.env`. Error ini umumnya menandakan kredensial client tidak valid; ketidaksesuaian callback biasanya dilaporkan Google sebagai `redirect_uri_mismatch`.
+```text
+Lokal:      http://localhost:3000/api/auth/google/callback
+Production: https://rekapbaris.com/api/auth/google/callback
+```
 
-## 4. Midtrans QRIS
+Isi Client ID dan Client Secret di `.env`, kemudian restart server. Google OAuth tidak diperlukan untuk login email/password.
 
-1. Salin **Server Key** dan **Client Key** Sandbox dari dashboard Midtrans ke `.env`.
-2. Pastikan `MIDTRANS_IS_PRODUCTION=false` selama pengujian.
-3. Setelah aplikasi dapat diakses publik melalui HTTPS, daftarkan URL notifikasi pada dashboard Midtrans:
+### Midtrans
 
-   ```text
-   https://rekapbaris.com/api/payments/midtrans/notification
-   ```
+Mulai dengan Server Key dan Client Key Sandbox serta `MIDTRANS_IS_PRODUCTION=false`. Setelah domain publik memakai HTTPS, pasang URL notifikasi berikut di dashboard Midtrans:
 
-4. Uji pembayaran berhasil, kedaluwarsa, pembatalan, stok produk, dan status transaksi dengan akun Sandbox.
-5. Setelah akun production disetujui, ganti key Sandbox dengan key Production dan set `MIDTRANS_IS_PRODUCTION=true`. Jangan mencampur pasangan key Sandbox dan Production.
+```text
+https://rekapbaris.com/api/payments/midtrans/notification
+```
 
-Server memvalidasi signature notifikasi dan jumlah pembayaran sebelum menandai transaksi lunas. Setelah kembali dari halaman Midtrans, aplikasi memeriksa status transaksi; tiket baru diterbitkan setelah notifikasi settlement terverifikasi. Pembayaran merchandise yang berhasil menampilkan nomor kontak Admin/Tim dari `ADMIN_PHONE` atau `TEAM_PHONE` jika sudah dikonfigurasi. Kunci rahasia tidak dikirim ke frontend.
+Gunakan key production hanya setelah akun production aktif dan pengujian selesai. Jangan mencampur key Sandbox dan Production. Server memvalidasi signature notifikasi sebelum menyimpan status pembayaran berhasil.
 
-## 5. Deploy ke VPS Biznet Gio — Ubuntu 22.04
+### Reset password WhatsApp
 
-### 5.1 Siapkan server dan domain
+Fitur ini menggunakan Fonnte. Isi `FONNTE_TOKEN` di `.env` server dan pastikan perangkat/akun pengirim aktif. Jangan memakai token pada frontend atau membagikannya. Pengiriman dan kebijakan layanan bergantung pada akun Fonnte.
 
-1. Buat VPS Ubuntu 22.04 pada Biznet Gio dan catat alamat IPv4 publiknya.
-2. Pada pengelola DNS domain, arahkan record `A` untuk `rekapbaris.com` dan `www` ke IPv4 VPS. Tunggu propagasi DNS.
-3. Masuk melalui SSH dari komputer:
+## Deploy Manual ke VPS Biznet Gio
 
-   ```powershell
-   ssh root@IP_VPS
-   ```
+Instruksi ini untuk VPS Ubuntu 22.04, domain `rekapbaris.com`, PostgreSQL lokal di VPS, Nginx, dan PM2. Sesuaikan domain, alamat email, dan path jika berbeda. Simpan salinan `.env` serta backup di lokasi privat.
 
-4. Perbarui server dan pasang alat dasar:
+### 1. Siapkan VPS
 
-   ```bash
-   apt update && apt upgrade -y
-   apt install -y git curl nginx postgresql postgresql-contrib build-essential
-   ```
+Arahkan DNS record `A` untuk domain dan `www` ke IPv4 VPS. Masuk melalui SSH, lalu pasang paket dasar:
 
-Aktifkan firewall hanya setelah aturan SSH dibuat. Buka SSH, HTTP, dan HTTPS; jangan membuka port PostgreSQL ke internet:
+```bash
+apt update && apt upgrade -y
+apt install -y git curl nginx postgresql postgresql-contrib build-essential
+```
+
+Pasang Node.js 20 dan PM2:
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+apt install -y nodejs
+npm install --global pm2
+node --version
+npm --version
+```
+
+Buat user database dan database aplikasi sekali saja:
+
+```bash
+sudo -u postgres createuser --pwprompt rekapbaris
+sudo -u postgres createdb --owner=rekapbaris rekapbaris
+```
+
+Jangan membuka port PostgreSQL atau port aplikasi `3000` ke internet. Firewall publik cukup membuka SSH, HTTP, dan HTTPS setelah aturan SSH dipastikan:
 
 ```bash
 ufw allow OpenSSH
@@ -186,30 +199,9 @@ ufw allow 443/tcp
 ufw enable
 ```
 
-### 5.2 Pasang Node.js, PM2, dan PostgreSQL
+### 2. Ambil kode dan konfigurasi production
 
-Pasang Node.js LTS 20 melalui NodeSource:
-
-```bash
-curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-apt install -y nodejs
-node --version
-npm --version
-npm install --global pm2
-```
-
-Buat database lokal di VPS:
-
-```bash
-sudo -u postgres createuser --pwprompt rekapbaris
-sudo -u postgres createdb --owner=rekapbaris rekapbaris
-```
-
-Simpan password database dengan aman; gunakan di `DATABASE_URL`. Database lokal pada VPS tidak perlu diekspos ke internet.
-
-### 5.3 Ambil aplikasi dan siapkan environment production
-
-Buat direktori aplikasi, clone repositori, lalu pasang dependencies:
+Clone repository dan install dependencies:
 
 ```bash
 mkdir -p /var/www
@@ -217,95 +209,74 @@ cd /var/www
 git clone https://github.com/maximumaziz-pixel/RekapBarisWeb.git
 cd /var/www/RekapBarisWeb
 npm ci
-```
-
-Buat file production tanpa menyalin secret ke repository:
-
-```bash
 cp ttdj/.env.example .env
 nano .env
 ```
 
-Atur nilai production setidaknya seperti berikut. Buat `ADMIN_EMAIL` dan `TEAM_EMAIL` berbeda, serta isi kedua password staf dengan rahasia unik minimal 8 karakter yang mengandung huruf, angka, dan simbol:
+Ganti semua placeholder. Minimal, environment production harus setara dengan konfigurasi berikut:
 
 ```dotenv
 PORT=3000
 APP_URL=https://rekapbaris.com
 COOKIE_SECURE=true
-JWT_SECRET=<string-acak-rahasia-minimal-32-karakter>
-DATABASE_URL=postgresql://rekapbaris:<password>@localhost:5432/rekapbaris?schema=public
+JWT_SECRET=GANTI_DENGAN_SECRET_ACAK_MINIMAL_32_KARAKTER
+DATABASE_URL=postgresql://rekapbaris:PASSWORD_DATABASE@localhost:5432/rekapbaris?schema=public
 GOOGLE_CALLBACK_URL=https://rekapbaris.com/api/auth/google/callback
 MIDTRANS_IS_PRODUCTION=false
 UPLOAD_DIR=/var/www/RekapBarisWeb/uploads
 ```
 
-Isi juga key Midtrans, nomor WhatsApp, `ADMIN_NAME`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `TEAM_NAME`, `TEAM_EMAIL`, dan `TEAM_PASSWORD`. Password Admin/Tim wajib berbeda, minimal 8 karakter, dan mengandung huruf, angka, serta simbol. Kredensial Google opsional untuk login email/password, tetapi harus benar jika tombol Google ingin digunakan. Awali dengan Midtrans Sandbox; aktifkan production hanya sesudah uji dan verifikasi. Jangan menaruh tanda kurung sudut pada nilai sebenarnya. PM2 mengatur `NODE_ENV=production` dari `ecosystem.config.js`; jangan menaruh variabel itu di `.env` karena Vite mengatur mode build-nya sendiri. Batasi akses file konfigurasi:
+Isi juga data Admin dan Tim yang berbeda, key Midtrans Sandbox, nomor WhatsApp, `VITE_ADMIN_WHATSAPP`, serta `FONNTE_TOKEN` bila fitur terkait digunakan. Simpan password database dengan URL encoding bila mengandung karakter khusus. Jangan menyalin nilai lokal `COOKIE_SECURE=false` ke production. PM2 mengatur `NODE_ENV=production` lewat `ecosystem.config.js`.
 
-Untuk fitur lupa password, proyek memakai **Fonnte API**. Buat/siapkan perangkat WhatsApp di akun Fonnte dan pastikan perangkat terhubung, lalu ambil token API dari dashboard Fonnte. Pesan reset dikirim langsung ke nomor WhatsApp akun dengan tautan bertoken acak yang berlaku 60 menit; integrasi ini tidak memerlukan template pesan Meta.
-
-Simpan token hanya di `.env` server; jangan pernah memakai awalan `VITE_`, memasukkan token ke Git, atau membagikannya:
-
-```dotenv
-ADMIN_PHONE=+6281111111111
-TEAM_PHONE=+6282222222222
-FONNTE_TOKEN=<token-api-dari-dashboard-fonnte>
-```
-
-Ganti placeholder token dengan token dari dashboard Fonnte di `.env` VPS, bukan di `.env.example`. API memakai endpoint `https://api.fonnte.com/send` dengan token pada header `Authorization`; nomor dikirim dalam format internasional tanpa tanda `+`, serta `countryCode=0` agar Fonnte tidak mengubah kode negaranya. Pesan berisi nama pengguna dan tautan `APP_URL/?resetToken=...`; Fonnte harus menerima pesan dan melaporkan `status: true` agar permintaan dianggap berhasil.
-
-Fonnte adalah gateway pihak ketiga, jadi tinjau ketentuan dan metode koneksi yang berlaku di akun Anda. Gunakan nomor WhatsApp khusus layanan, aktifkan keamanan akun, batasi akses token, serta jangan kirim pesan yang tidak diminta. Uji ke nomor sendiri terlebih dahulu. Hindari mengandalkan nomor pribadi yang penting untuk operasional karena sesi/perangkat gateway dapat terputus atau penggunaan yang melanggar kebijakan WhatsApp dapat menimbulkan pembatasan akun. Jangan kirim token API atau token reset ke log. Jika Fonnte tidak dikonfigurasi, endpoint memberi error konfigurasi; jika pengiriman gagal, server mencatat kegagalan dan menghapus token reset yang belum terkirim. Respons publik tetap generik untuk mencegah enumerasi nomor akun.
+Batasi akses file dan siapkan direktori unggahan:
 
 ```bash
 chmod 600 .env
 mkdir -p uploads
 ```
 
-Tambahkan URL callback HTTPS di Google Cloud Console sebelum menguji login. Simpan `.env` dan cadangan database di lokasi privat yang aksesnya terbatas.
+### 3. Siapkan database dan build aplikasi
 
-### 5.4 Siapkan database dan build
+Jalankan hanya pada database baru atau setelah backup dan peninjauan perubahan skema:
 
 ```bash
+npm run db:validate
 npm run db:generate
 npm run db:deploy
 npm run db:seed
 npm run build
 ```
 
-`db:seed` membuat atau memperbarui dua akun staf aktif, termasuk hash password scrypt dari environment. Jalankan seed lagi setelah mengubah email, nama username, atau password staf. Akun Admin/Tim dapat masuk menggunakan email atau nama yang dikonfigurasi dan password. Jangan gunakan email yang sama untuk Admin dan Tim.
+`db:deploy` memakai `prisma db push`. Periksa `prisma/schema.prisma` dan dampak perubahan sebelum menjalankannya terhadap database yang berisi data. `db:seed` mengatur dua akun staf dari environment; jangan memakai placeholder, email/nomor yang sama, atau password yang sama.
 
-### 5.5 Jalankan aplikasi dengan PM2
-
-PM2 mengelola proses Node dan memulihkannya setelah restart:
+### 4. Jalankan dengan PM2
 
 ```bash
 pm2 startOrReload ecosystem.config.js --update-env
 pm2 status
-pm2 logs rekapbaris
 pm2 save
 pm2 startup
 ```
 
-Jika `pm2 startup` mencetak sebuah perintah `sudo ...`, salin dan jalankan perintah yang dicetak itu sebagai root, lalu simpan daftar proses lagi:
+Jalankan perintah `sudo ...` yang dicetak oleh `pm2 startup`, lalu jalankan `pm2 save` lagi. Periksa API langsung di VPS:
 
 ```bash
-pm2 save
+curl -fsS http://127.0.0.1:3000/api/health
 ```
 
-Periksa aplikasi lokal di VPS dengan `curl http://127.0.0.1:3000/api/health`. Jangan membuka port 3000 pada firewall publik; Nginx akan meneruskan permintaan ke sana.
+### 5. Nginx dan HTTPS
 
-### 5.6 Pasang Nginx sebagai reverse proxy
-
-Untuk memperoleh sertifikat pertama kali, siapkan konfigurasi HTTP sederhana:
+Konfigurasi HTTPS di `deploy/nginx/rekapbaris.conf` mengharapkan sertifikat Let's Encrypt sudah tersedia. Untuk permintaan sertifikat pertama, buat site HTTP sementara:
 
 ```bash
 cat > /etc/nginx/sites-available/rekapbaris <<'NGINX'
 server {
     listen 80;
+    listen [::]:80;
     server_name rekapbaris.com www.rekapbaris.com;
     client_max_body_size 10m;
     location / {
         proxy_pass http://127.0.0.1:3000;
-        proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -318,14 +289,14 @@ nginx -t
 systemctl reload nginx
 ```
 
-Hapus symlink default jika bentrok (`rm /etc/nginx/sites-enabled/default`), lalu pasang Certbot dan terbitkan sertifikat:
+Jika site default Nginx bentrok, periksa konfigurasi sebelum menonaktifkan symlink default. Lalu pasang sertifikat:
 
 ```bash
 apt install -y certbot python3-certbot-nginx
 certbot --nginx -d rekapbaris.com -d www.rekapbaris.com
 ```
 
-Certbot meminta alamat email dan persetujuan. Setelah sertifikat terbit, sesuaikan `deploy/nginx/rekapbaris.conf` jika nama domain berbeda, lalu salin konfigurasi dan uji:
+Setelah sertifikat terbit, salin konfigurasi HTTPS dari repository (sesuaikan `server_name` dan path sertifikat bila domain berbeda), lalu periksa dan reload Nginx:
 
 ```bash
 cp deploy/nginx/rekapbaris.conf /etc/nginx/sites-available/rekapbaris
@@ -334,92 +305,174 @@ systemctl reload nginx
 certbot renew --dry-run
 ```
 
-Konfigurasi repo mengarahkan HTTP ke HTTPS dan meneruskan traffic HTTPS ke Express pada port `3000`. Pastikan path sertifikat pada file cocok dengan domain di server.
+Buka `https://rekapbaris.com` dan `https://rekapbaris.com/api/health`. Nginx meneruskan request ke Express di port `3000`; jangan buka port itu secara publik.
 
-### 5.7 Verifikasi, update, dan backup
+## Pembaruan Tanpa Menimpa Perubahan
 
-- Buka `https://rekapbaris.com` dan `https://rekapbaris.com/api/health`.
-- Uji registrasi per role, persetujuan Admin/Tim, login dengan email/nomor HP, serta lupa password via Fonnte ke nomor uji sebelum produksi, dashboard role, transaksi Sandbox, dan webhook dari dashboard Midtrans.
-- Pantau `pm2 logs rekapbaris` dan `journalctl -u nginx`.
-- Untuk pembaruan manual, ikuti langkah di bagian **Pembaruan manual ke VPS** di bawah.
-- Backup PostgreSQL (contoh): `sudo -u postgres pg_dump rekapbaris > /lokasi-aman/rekapbaris.sql`. Backup juga folder uploads dan environment secara aman; jangan simpan backup di folder publik web.
+Gunakan Git untuk memperbarui source. Jangan menyalin seluruh folder proyek lama ke folder baru atau mengekstrak ZIP di atas checkout yang sudah ada. File `.env` dan `uploads/` diabaikan Git; simpan keduanya di folder project dan jangan menghapusnya saat memperbarui kode.
 
-## Pengelolaan file dan konfigurasi
+### Pembaruan lokal melalui VS Code
 
-- `public/logo.svg` dipakai sebagai logo navbar, ikon situs, dan watermark hero.
-- Express melayani file statis dari `public/` dan hasil build `dist/`. Poster event JPEG, PNG, atau WebP hingga 5 MB dapat diunggah dari form tambah/edit event; API memvalidasi tipe dan signature file serta hak pemilik event. Berkas disimpan di `UPLOAD_DIR` dan tersedia melalui `/uploads/`. Pastikan proses Node memiliki izin tulis ke direktori tersebut dan direktori upload termasuk dalam backup.
-- Untuk mengubah desain Tailwind, edit `tailwind.config.js` dan `src/styles.css`; layout halaman berada di `src/App.jsx`.
-- Toggle tema menyimpan pilihan browser. Tombol WhatsApp mengarah ke nomor Admin `VITE_ADMIN_WHATSAPP`; klik balon hijau untuk membuka kartu chat, lalu pilih **Mulai chat WhatsApp**.
-- Skema database PostgreSQL berada di `prisma/schema.prisma`. Salin `ttdj/.env.example` hanya untuk membuat environment baru; jangan pernah menimpa `.env` production yang sudah berisi credential.
+1. Simpan pekerjaan yang sedang berjalan. Di setiap terminal VS Code yang menjalankan aplikasi (`npm run dev`, Vite, atau server), tekan `Ctrl+C` dan tunggu sampai proses berhenti. Tutup terminal lain yang masih menjalankan server dari folder project ini. Ini mencegah file dependency Windows seperti `esbuild.exe` terkunci saat `npm ci`.
+2. Buka **Source Control** di VS Code dan tinjau semua perubahan, termasuk file baru. Commit perubahan yang ingin dipertahankan, atau buat backup/stash yang sudah dipastikan aman. Jangan lanjut bila ada perubahan yang belum dipahami atau belum diamankan.
+3. Buka terminal **PowerShell** baru di root project. Periksa branch dan status:
 
-## Perintah pengembangan
+    ```powershell
+    git status --short
+    git branch --show-current
+    ```
 
-```bash
-npm run dev          # Vite + Express untuk development
-npm run build        # Build frontend production
-npm start             # Jalankan Express dan frontend hasil build
-npm run check         # Syntax check backend dan seed
-npm run db:validate   # Validasi schema Prisma
-npm run db:generate   # Generate Prisma Client
-npm run db:deploy     # Sinkronkan schema ke database
-npm run db:seed       # Seed akun Admin dan Tim
-npm run test:auth     # Uji autentikasi, nomor WhatsApp, dan ranking
-```
+   Lanjut hanya jika branch adalah `main` dan `git status --short` tidak menampilkan apa pun. Jika branch berbeda atau status menampilkan file, berhenti dan tinjau perubahan itu terlebih dahulu. Jangan gunakan `git reset`, force pull, atau menghapus file untuk memaksa proses.
+4. Ambil pembaruan. Jika perintah gagal atau menampilkan konflik, berhenti dan selesaikan penyebabnya sebelum melanjutkan:
 
-## Langkah pembaruan aplikasi di VPS
+    ```powershell
+    git pull --ff-only origin main
+    ```
 
-Jalankan langkah ini setelah perubahan sudah di-commit dan di-push ke branch `main` pada GitHub. Dari SSH terminal VPS:
+   `--ff-only` mencegah Git membuat merge yang tidak diharapkan. Jika gagal karena branch lokal tertinggal dengan commit lokal atau riwayat berbeda, jangan paksa; minta bantuan untuk meninjau riwayatnya.
+5. Setelah pull berhasil, pasang dependency dan jalankan pemeriksaan satu per satu. Lanjut ke perintah berikutnya hanya bila perintah sebelumnya berhasil:
+
+    ```powershell
+    npm ci
+    ```
+
+    ```powershell
+    npm run db:validate
+    ```
+
+    ```powershell
+    npm run db:generate
+    ```
+
+    ```powershell
+    npm run build
+    ```
+
+   Jika `npm ci` gagal dengan `EPERM` atau pesan bahwa file sedang dipakai (sering pada `node_modules\\@esbuild\\win32-x64\\esbuild.exe`), jangan langsung menjalankannya sebagai Administrator atau menghapus file secara manual. Pastikan semua server/terminal project sudah berhenti, tutup proses Vite/Node project yang masih aktif melalui VS Code atau Task Manager, tunggu antivirus menyelesaikan pemindaian bila sedang berlangsung, lalu coba `npm ci` lagi. Jika tetap gagal, restart Windows dan ulangi `npm ci` sebelum membuka server development. Untuk error lain, baca file log yang ditunjukkan npm dan selesaikan penyebabnya sebelum lanjut.
+
+`npm ci` memasang dependency sesuai `package-lock.json` dan mengganti isi `node_modules`; perintah ini tidak mengubah `.env`, database PostgreSQL, atau `uploads/`. Jangan menghapus `package-lock.json` atau menggantinya dengan `npm install` sebagai jalan pintas.
+
+Jika pembaruan mengubah `prisma/schema.prisma`, tinjau perubahan skema dahulu dan backup database lokal lewat pgAdmin sebelum menjalankan `npm run db:deploy`. `db:deploy` menjalankan `prisma db push` dan dapat mengubah struktur database; pastikan `.env` menunjuk ke database lokal sebelum menjalankannya. Jangan jalankan `npm run db:setup` untuk pembaruan rutin karena perintah itu juga menjalankan seed akun staf.
+
+6. Setelah semua pemeriksaan berhasil, jalankan kembali `npm run dev` dari terminal VS Code dan periksa aplikasi di `http://localhost:5173`. Biarkan terminal itu tetap terbuka selama aplikasi digunakan.
+
+### Commit perubahan lokal ke GitHub
+
+Ulangi alur ini dari folder repository **setiap project** yang ingin diperbarui. Pastikan terminal berada di root repository yang benar; satu commit hanya berisi perubahan pada repository tersebut. Commit menyimpan perubahan di komputer lokal, `git push` mengirim commit ke GitHub, dan langkah deploy VPS di bawah mengambil commit tersebut ke server.
+
+1. Pastikan folder, branch, dan remote yang dituju sudah benar:
+
+    ```powershell
+    Get-Location
+    git remote -v
+    git branch --show-current
+    git status --short
+    ```
+
+   Pastikan `Get-Location` menunjukkan folder project yang dimaksud dan remote `origin` menunjuk ke repository GitHub yang benar. Perintah berikut mengasumsikan branch target bernama `main`. Jika branch berbeda, ganti `main` dengan nama branch yang benar di seluruh langkah.
+2. Tinjau semua perubahan yang akan dimasukkan, termasuk file baru dan file yang dihapus. Jangan lanjut bila ada perubahan yang tidak Anda kenali:
+
+    ```powershell
+    git diff
+    git status --short
+    ```
+
+   Periksa juga file baru yang belum dilacak dari daftar `git status --short`. Jangan commit `.env`, token/password, backup database, log, atau data pribadi. `.env` dan `uploads/` seharusnya diabaikan Git.
+3. Jika memang ingin memasukkan **semua perubahan dalam repository ini**, stage semuanya dari root project:
+
+    ```powershell
+    git add -A
+    git status --short
+    git diff --cached --stat
+    git diff --cached
+    ```
+
+   `git add -A` memasukkan perubahan file terlacak, file baru, dan penghapusan; file yang diabaikan oleh `.gitignore` tidak ikut. Cermati `git diff --cached` sebelum commit. Jika ada file yang tidak ingin dikirim, keluarkan file tersebut dari staging, lalu tinjau ulang:
+
+    ```powershell
+    git restore --staged path\ke\file
+    ```
+
+4. Commit seluruh perubahan yang sudah ditinjau. Ubah pesan agar menjelaskan isi perubahan:
+
+    ```powershell
+    git commit -m "Jelaskan perubahan project"
+    ```
+
+   Jika Git menjawab `nothing to commit`, tidak ada perubahan staged untuk dibuat menjadi commit. Jika Git meminta identitas, atur nama dan email commit untuk repository ini lalu ulangi:
+
+    ```powershell
+    git config user.name "Nama Anda"
+    git config user.email "email-anda@example.com"
+    ```
+
+5. Pastikan commit tercatat, lalu push semua commit lokal pada branch aktif ke branch `main` di GitHub:
+
+    ```powershell
+    git log -1 --oneline
+    git status --short
+    git push origin main
+    ```
+
+   Jika branch aktif bukan `main`, push branch tersebut dengan `git push -u origin nama-branch`, lalu buat Pull Request ke `main` di GitHub. VPS yang mengikuti `main` baru mendapat perubahan setelah Pull Request digabungkan. Jika push ditolak karena GitHub memiliki commit baru, jangan force-push; sinkronkan dan tinjau riwayat terlebih dahulu, lalu push kembali.
+
+### Pembaruan VPS
+
+Setelah push berhasil ke `main` (atau Pull Request sudah digabungkan), update **setiap VPS/project** yang ingin menerima perubahan tersebut dengan menjalankan langkah ini pada checkout dan server project yang sesuai. Push ke GitHub tidak otomatis memperbarui VPS kecuali repository tersebut sudah disiapkan dengan pipeline deployment otomatis. `git pull --ff-only` mengambil seluruh commit terbaru dari remote branch; semua file terlacak yang berubah dalam commit tersebut ikut diperbarui, bukan hanya file README atau file yang disebut satu per satu.
+
+Login melalui SSH dan periksa checkout sebelum mengubah file:
 
 ```bash
 cd /var/www/RekapBarisWeb
 git status --short
+git branch --show-current
+git remote -v
 ```
 
-Jika ada perubahan lokal yang belum disimpan, berhenti dan tinjau atau cadangkan terlebih dahulu; jangan menimpa `.env` production. Pastikan `.env` VPS berisi `ADMIN_PASSWORD` dan `TEAM_PASSWORD` yang berbeda (masing-masing minimal 8 karakter serta mengandung huruf, angka, dan simbol), `ADMIN_PHONE` dan `TEAM_PHONE` yang valid dan berbeda, serta `FONNTE_TOKEN`. Pastikan alamat email Admin dan Tim juga berbeda. Jika bersih dan konfigurasi sudah siap, lanjutkan:
+Pastikan folder, remote `origin`, dan branch (`main`) cocok dengan project yang hendak dideploy. Jika `git status --short` menampilkan perubahan lokal, berhenti dan tinjau/simpan perubahan tersebut sebelum lanjut. Jangan menjalankan `git reset`, force pull, atau menyalin checkout baru di atas folder yang sedang dipakai.
+
+Sebelum update, pastikan `.env` dan `uploads/` tetap berada di folder aplikasi. Buat backup database di luar folder project sebelum perubahan skema. Untuk update kode rutin yang tidak mengubah skema, jalankan perintah berikut melalui SSH:
 
 ```bash
 set -e
-umask 077
-backup="$HOME/rekapbaris-$(date +%F-%H%M%S).sql"
-sudo -u postgres pg_dump rekapbaris > "$backup"
-test -s "$backup"
 git pull --ff-only origin main
 npm ci
+npm run db:validate
 npm run db:generate
-npm run db:deploy
-npm run db:seed
 npm run build
 pm2 restart rekapbaris --update-env
 curl -fsS http://127.0.0.1:3000/api/health
 ```
 
-Perintah dump menyimpan cadangan database di home direktori pengguna SSH sebelum pembaruan skema; `umask 077` membatasi akses file cadangan. `set -e` dan `test -s` menghentikan proses jika backup gagal atau kosong. `db:seed` memperbarui akun staf dan hash password dari `.env`. Setelah health check berhasil, buka `https://rekapbaris.com` dan muat ulang paksa browser. Jika aplikasi belum pulih, periksa `pm2 status` dan `pm2 logs rekapbaris --lines 100`; jangan menghapus atau mengganti `.env` production.
+Perintah di atas mengasumsikan perubahan sudah ada di `origin/main`, folder checkout VPS berada pada branch `main`, dan PM2 memakai nama proses `rekapbaris`. Ganti path folder dan nama proses jika project/VPS Anda berbeda. `npm ci` memasang ulang dependency tepat dari lockfile; `.env` dan `uploads/` yang tidak dilacak Git tetap ada. Jangan menjalankan rangkaian tersebut jika `git status --short` menunjukkan perubahan lokal.
 
-## Pembaruan manual ke VPS
+Jika skema berubah, buat backup database terlebih dahulu, tinjau file `prisma/schema.prisma`, lalu jalankan `npm run db:deploy` secara terpisah sebelum build/restart. `db:deploy` memakai `prisma db push`, bukan migrasi terkontrol; jangan jalankan otomatis tanpa meninjau dampaknya dan memastikan `DATABASE_URL` di VPS menunjuk ke database production yang benar. Jalankan `npm run db:seed` hanya bila memang perlu memperbarui akun Admin/Tim dari environment. Jika health check gagal, periksa `pm2 status`, `pm2 logs rekapbaris --lines 100`, dan `journalctl -u nginx` sebelum mencoba update lagi.
 
-Deploy ke VPS dilakukan manual melalui instruksi ini. Setelah perubahan ini berada di branch utama, repo tidak lagi memiliki workflow yang memicu deploy otomatis. Sambungkan ke VPS via SSH dan pastikan `.env` production tidak ditimpa. Akun staf wajib punya email, nomor WhatsApp, dan password yang berbeda; password minimal 8 karakter serta mengandung huruf, angka, dan simbol. `FONNTE_TOKEN` yang valid diperlukan agar tautan reset dapat terkirim.
+## Perintah Proyek
 
-```bash
-cd /var/www/RekapBarisWeb
-git status --short
-```
+| Perintah | Fungsi |
+| --- | --- |
+| `npm ci` | Install persis berdasarkan `package-lock.json`. |
+| `npm run dev` | Jalankan Vite dan Express untuk development. |
+| `npm run build` | Build frontend ke `dist/`. |
+| `npm start` | Jalankan Express untuk deployment/build lokal. |
+| `npm run check` | Pemeriksaan sintaks JavaScript yang ditentukan di package scripts. |
+| `npm run test:auth` | Jalankan test Node untuk autentikasi, rate limit, Midtrans, WhatsApp, dan scoring. |
+| `npm run db:validate` | Validasi skema Prisma. |
+| `npm run db:generate` | Generate Prisma Client. |
+| `npm run db:deploy` | Jalankan `prisma db push`; tinjau sebelum database berisi data. |
+| `npm run db:seed` | Buat/perbarui akun Admin dan Tim dari environment. |
+| `npm run db:setup` | Generate client, sinkronkan skema, lalu seed akun staf. Umumnya dipakai saat setup awal. |
 
-Jika worktree bersih, jalankan pembaruan berikut:
+## Upload dan File
 
-```bash
-set -e
-umask 077
-backup="$HOME/rekapbaris-$(date +%F-%H%M%S).sql"
-sudo -u postgres pg_dump rekapbaris > "$backup"
-test -s "$backup"
-git pull --ff-only origin main
-npm ci
-npm run db:generate
-npm run db:deploy
-npm run db:seed
-npm run build
-pm2 restart rekapbaris --update-env
-curl -fsS http://127.0.0.1:3000/api/health
-```
+Express menyajikan frontend hasil build dan `public/`. Poster event disimpan di `UPLOAD_DIR` (default `uploads/`) dan dilayani melalui `/uploads/`. Backup folder upload secara terpisah dari PostgreSQL. Jangan letakkan file backup atau `.env` di folder publik.
 
-Jangan lanjut jika `git status` menunjukkan perubahan yang tidak dikenal atau backup gagal. Setelah health check berhasil, uji login, pendaftaran, reset email, dan dashboard sesuai role. Periksa `pm2 logs rekapbaris --lines 100` bila ada error.
+## Ringkasan Tutorial
+
+1. Pasang Node.js 20, Git, PostgreSQL, dan VS Code; clone repository lalu buka foldernya di VS Code.
+2. Buat database PostgreSQL lokal, salin `ttdj/.env.example` menjadi `.env`, lalu isi `DATABASE_URL`, `JWT_SECRET`, serta akun Admin dan Tim.
+3. Jalankan `npm ci`, `npm run db:validate`, `npm run db:setup`, lalu `npm run dev`; buka `http://localhost:5173`.
+4. Atur integrasi Google OAuth, Midtrans Sandbox, dan Fonnte hanya jika fitur tersebut akan digunakan.
+5. Untuk deploy, siapkan VPS Ubuntu, PostgreSQL lokal, Node.js, PM2, domain, dan Nginx; isi `.env` production, jalankan generate/schema/seed/build, lalu aktifkan PM2 dan HTTPS.
+6. Untuk update, tinjau `git status` dan branch terlebih dahulu, gunakan `git pull --ff-only`, install dari lockfile dengan `npm ci`, build, lalu restart aplikasi. Backup dan tinjau skema sebelum menjalankan `db:deploy`.

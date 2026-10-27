@@ -3,11 +3,12 @@ import {
   ArrowDown, ArrowRight, ArrowUpRight, BadgeCheck, CalendarDays, Check,
   ChevronDown, Clock3, Compass, CreditCard, Fingerprint, Heart,
   Instagram, LayoutDashboard, LockKeyhole, Moon, Search,
-  ShieldCheck, ShoppingBag, Sun, Ticket, Trophy, UserRound, Users, Vote,
+  LogOut, ShieldCheck, ShoppingBag, Sun, Ticket, Trophy, UserRound, Users, Vote,
   X, Zap
 } from "lucide-react";
 import GoogleAuthModal from "./components/AuthModal.jsx";
 import WhatsAppFloat from "./components/WhatsAppFloat.jsx";
+import ScoringModule from "./components/ScoringModule.jsx";
 
 const navigation = [
   { id: "home", label: "Home", icon: Compass },
@@ -52,9 +53,33 @@ function eventState(event) {
   return "Tersedia";
 }
 
+function registrationStatusLabel(status) {
+  return ({
+    APPROVED: "Terdaftar",
+    PENDING: "Menunggu persetujuan",
+    REJECTED: "Ditolak",
+    ACTIVE: "Aktif"
+  })[status] || status || "Status belum tersedia";
+}
+
 function formatDate(value) {
   if (!value) return "Jadwal segera diumumkan";
   return new Intl.DateTimeFormat("id-ID", { day: "numeric", month: "long", year: "numeric" }).format(new Date(value));
+}
+
+function dateInputValue(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function dateInputToIso(value, isEndDate = false) {
+  if (!value) return "";
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  if (isEndDate) date.setHours(23, 59, 59, 999);
+  return date.toISOString();
 }
 
 function App() {
@@ -98,6 +123,15 @@ function App() {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("rb-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("view") !== "account") return;
+    setActiveTab("dashboard");
+    params.delete("view");
+    const query = params.toString();
+    window.history.replaceState({}, "", `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
+  }, []);
 
   useEffect(() => {
     if (pendingEventRegistration) sessionStorage.setItem("rb-pending-event-registration", JSON.stringify(pendingEventRegistration));
@@ -405,9 +439,9 @@ function App() {
         method: "POST",
         body: JSON.stringify({
           ...eventFields,
-          startsAt: eventForm.schedules[0]?.startsAt ? new Date(eventForm.schedules[0].startsAt).toISOString() : "",
-          endsAt: eventForm.schedules.at(-1)?.endsAt ? new Date(eventForm.schedules.at(-1).endsAt).toISOString() : "",
-          schedules: eventForm.schedules.filter((date) => date.startsAt).map((date) => ({ startsAt: new Date(date.startsAt).toISOString(), endsAt: date.endsAt ? new Date(date.endsAt).toISOString() : "" })),
+          startsAt: dateInputToIso(eventForm.schedules[0]?.startsAt),
+          endsAt: dateInputToIso(eventForm.schedules.at(-1)?.endsAt, true),
+          schedules: eventForm.schedules.filter((date) => date.startsAt).map((date) => ({ startsAt: dateInputToIso(date.startsAt), endsAt: dateInputToIso(date.endsAt, true) })),
           ticketPrice: Number(eventForm.ticketPrice),
           votePrice: Number(eventForm.votePrice)
         })
@@ -578,7 +612,7 @@ function App() {
               onEventStatus={(id, status) => changeStatus(`/admin/events/${id}/status`, status)}
               onRefresh={refreshDashboard}
             />}
-            {activeTab === "dashboard" && user && !["ADMIN", "TEAM"].includes(user.role) && <MemberDashboard user={user} data={memberDashboard} eventForm={eventForm} setEventForm={setEventForm} onEventCreate={createEvent} busyId={busyId} onExploreEvents={() => openTab("events")} onRefresh={async () => setMemberDashboard(await api("/dashboard"))} />}
+            {activeTab === "dashboard" && user && !["ADMIN", "TEAM"].includes(user.role) && <MemberDashboard user={user} data={memberDashboard} eventForm={eventForm} setEventForm={setEventForm} onEventCreate={createEvent} busyId={busyId} onExploreEvents={() => openTab("events")} onRefresh={async () => setMemberDashboard(await api("/dashboard"))} onLogout={logout} />}
           </>
         )}
       </main>
@@ -755,14 +789,14 @@ function AboutPage({ onJoin }) {
   return <section className="section-wrap about-page"><div className="about-cover"><span className="eyebrow">RUANG UNTUK SEMUA BARIS</span><h1>Teknologi yang<br /><em>menyatukan gerakan.</em></h1><p>Rekap Baris adalah platform digital untuk membuat pengelolaan event, kompetisi, dukungan komunitas, dan ticketing lebih sederhana.</p><button className="button button-primary button-large" onClick={onJoin} type="button">Bertumbuh bersama <ArrowRight size={16} /></button><div className="about-orbit">RB</div></div><div className="about-values"><div><span>01 / KONEKSI</span><h3>Satu ruang untuk seluruh ekosistem event.</h3><p>Penyelenggara, peserta, juri, dan penonton dapat terhubung lewat pengalaman yang konsisten.</p></div><div><span>02 / TRANSPARANSI</span><h3>Proses yang jelas, data yang tertata.</h3><p>Moderasi event dan akun menjaga ruang publik tetap terpercaya dan nyaman digunakan.</p></div><div><span>03 / KEBERSAMAAN</span><h3>Semangat komunitas tetap menjadi pusatnya.</h3><p>Teknologi hadir untuk mendukung momen kebersamaan, bukan menggantikannya.</p></div></div></section>;
 }
 
-function MemberDashboard({ user, data, eventForm, setEventForm, onEventCreate, busyId, onExploreEvents, onRefresh }) {
+function MemberDashboard({ user, data, eventForm, setEventForm, onEventCreate, busyId, onExploreEvents, onRefresh, onLogout }) {
   const [participantTab, setParticipantTab] = useState("events");
   const roleNames = {
     PARTICIPANT: "Dashboard Peserta",
-    ORGANIZER: "Dashboard Penyelenggara",
-    JUDGE: "Dashboard Juri"
+    ORGANIZER: "Dashboard Penyelenggara"
   };
   if (!data) return <section className="section-wrap dashboard-page"><div className="dashboard-wait"><span className="loader-orbit" /><span>Memuat dashboard...</span></div></section>;
+  if (user.role === "PARTICIPANT") return <ParticipantDashboard user={user} data={data} onExploreEvents={onExploreEvents} onLogout={onLogout} />;
 
   return <section className="section-wrap dashboard-page">
     <div className="dashboard-heading">
@@ -781,17 +815,19 @@ function MemberDashboard({ user, data, eventForm, setEventForm, onEventCreate, b
         {user.institution && <p>Asal satuan: {user.institution}</p>}
       </article>
       {user.role === "PARTICIPANT" && <>
-        {participantTab === "events" && <article className="dashboard-panel member-event-list">
+        {participantTab === "events" && <>
+          <article className="dashboard-panel member-event-list">
           <div className="panel-heading"><div><span className="eyebrow">EVENT YANG DIIKUTI</span><h3>{data.registrations.length} pendaftaran</h3></div><button className="button button-outline button-small" type="button" onClick={onExploreEvents}>Cari event</button></div>
           {data.registrations.map((item) => <div className="member-event-row" key={item.id}>
             {item.event.posterUrl
               ? <img src={item.event.posterUrl} alt={`Poster ${item.event.name}`} loading="lazy" />
               : <div className="member-event-poster-fallback" aria-hidden="true"><CalendarDays size={20} /></div>}
-            <div className="member-event-copy"><strong>{item.event.name}</strong><small>{item.event.institution || "Penyelenggara"} · {formatDate(item.event.startsAt)}</small><small>{item.participantName}{item.teamName ? ` · ${item.teamName}` : ""}</small></div>
+            <div className="member-event-copy"><strong>{item.event.name}</strong><small>{item.event.institution || "Penyelenggara"} · {formatDate(item.event.startsAt)}</small><small>{item.teamName && item.teamName !== item.participantName ? `${item.participantName} · ${item.teamName}` : item.teamName || item.participantName}</small>{item.event.announcement && <div className="participant-announcement"><strong>{item.event.announcement.title}</strong><p>{item.event.announcement.message}</p></div>}</div>
             <span className={`state-badge state-${item.status.toLowerCase()}`}>{item.status}</span>
           </div>)}
           {!data.registrations.length && <EmptyState icon={CalendarDays} title="Belum mengikuti event" text="Event yang Anda ikuti akan muncul di menu ini." />}
-        </article>}
+          </article>
+        </>}
         {participantTab === "payments" && <article className="dashboard-panel">
           <span className="eyebrow">PEMBAYARAN</span>
           <h2>{data.payments.length} transaksi terbaru</h2>
@@ -806,23 +842,155 @@ function MemberDashboard({ user, data, eventForm, setEventForm, onEventCreate, b
         {!data.events.length && <p className="empty-inline">Belum ada event di akun ini. Hubungi Tim Rekap untuk mengajukan event.</p>}
       </article>}
       {user.role === "ORGANIZER" && <OrganizerEventForm eventForm={eventForm} setEventForm={setEventForm} onEventCreate={onEventCreate} busyId={busyId} />}
-      {user.role === "JUDGE" && <article className="dashboard-panel">
-        <span className="eyebrow">EVENT DI SATUAN ANDA</span>
-        <h2>{data.events.length} event tersedia</h2>
-        <p>{user.institution ? `Daftar ini menampilkan event yang disetujui pada asal satuan ${user.institution}.` : "Daftar event yang telah disetujui."} Penugasan juri dikelola terpisah oleh Tim Rekap.</p>
-        {data.events.map((event) => <div className="member-dashboard-row" key={event.id}><strong>{event.name}</strong><span>{event.startsAt ? formatDate(event.startsAt) : "Jadwal segera diumumkan"}</span><small>{event.institution}</small></div>)}
-        {!data.events.length && <p className="empty-inline">Belum ada event tersedia untuk asal satuan ini.</p>}
-      </article>}
-      {user.role === "JUDGE" && data.events.length > 0 && <JudgeScoring events={data.events} />}
     </div>
   </section>;
 }
 
-function localDateTimeValue(value) {
-  if (!value) return "";
-  const date = new Date(value);
-  date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
-  return date.toISOString().slice(0, 16);
+function ParticipantDashboard({ user, data, onExploreEvents, onLogout }) {
+  const [activeSection, setActiveSection] = useState("dashboard");
+  const [selectedRegistrationId, setSelectedRegistrationId] = useState("");
+  const registrations = Array.isArray(data.registrations) ? data.registrations : [];
+  const payments = Array.isArray(data.payments) ? data.payments : [];
+  const selectedRegistration = registrations.find((item) => item.id === selectedRegistrationId);
+  const approvedCount = registrations.filter((item) => item.status === "APPROVED").length;
+  const scoredCount = registrations.filter((item) => item.assessment?.participant?.complete).length;
+  const tabItems = [
+    { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+    { id: "events", label: "Event yang diikuti", icon: CalendarDays },
+    { id: "history", label: "Riwayat nilai", icon: Trophy },
+    { id: "payments", label: "Pesanan saya", icon: CreditCard },
+    { id: "profile", label: "Profil", icon: UserRound }
+  ];
+  const showHistory = (registrationId) => {
+    setSelectedRegistrationId(registrationId);
+    setActiveSection("history");
+  };
+  return <section className="section-wrap dashboard-page participant-portal">
+    <aside className="participant-sidebar" aria-label="Menu akun peserta">
+      <div className="participant-brand"><span>RB</span><strong>Rekap Baris</strong></div>
+      <nav>{tabItems.map(({ id, label, icon: Icon }) => <button key={id} type="button" className={activeSection === id ? "is-active" : ""} onClick={() => setActiveSection(id)}><Icon size={17} />{label}</button>)}</nav>
+      <div className="participant-sidebar-footer"><div className="participant-sidebar-profile"><UserRound size={16} /><span>{user.name}</span></div><button type="button" onClick={onLogout}><LogOut size={16} />Keluar</button></div>
+    </aside>
+    <div className="participant-portal-main">
+      {activeSection === "dashboard" && <>
+        <div className="participant-welcome">
+          <div><span className="participant-date"><CalendarDays size={14} />{new Intl.DateTimeFormat("id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(new Date())}</span>
+            <h1>Halo, {String(user.name || "Peserta").split(/\s+/)[0]}!</h1>
+            <p>Selamat datang kembali. Pantau event dan perkembangan nilai tim Anda di sini.</p></div>
+          <div className="participant-welcome-mark" aria-hidden="true"><Trophy size={54} /></div>
+        </div>
+        <div className="participant-summary-grid">
+          <article><span>Event diikuti</span><strong>{registrations.length}</strong><CalendarDays size={20} /></article>
+          <article><span>Pendaftaran disetujui</span><strong>{approvedCount}</strong><BadgeCheck size={20} /></article>
+          <article><span>Riwayat nilai tersedia</span><strong>{scoredCount}</strong><Trophy size={20} /></article>
+        </div>
+        <section className="participant-content-card">
+          <div className="participant-section-heading"><div><span className="eyebrow">Event yang diikuti</span><h2>Perjalanan lomba Anda</h2><p>Pilih event untuk melihat rincian pendaftaran dan riwayat penilaian.</p></div><button className="button button-outline button-small" type="button" onClick={onExploreEvents}>Cari event <ArrowRight size={14} /></button></div>
+          <ParticipantEventList registrations={registrations} onHistory={showHistory} />
+        </section>
+      </>}
+      {activeSection === "events" && <section className="participant-content-card">
+        <div className="participant-section-heading"><div><span className="eyebrow">Pendaftaran</span><h2>Event yang diikuti</h2><p>Status pendaftaran dan informasi resmi dari penyelenggara.</p></div><button className="button button-outline button-small" type="button" onClick={onExploreEvents}>Cari event <ArrowRight size={14} /></button></div>
+        <ParticipantEventList registrations={registrations} onHistory={showHistory} />
+      </section>}
+      {activeSection === "history" && <section className="participant-content-card">
+        <div className="participant-section-heading"><div><span className="eyebrow">Assessment history</span><h2>Riwayat penilaian</h2><p>Rincian nilai diambil dari format penilaian yang diterapkan pada event.</p></div></div>
+        {!selectedRegistration ? <ParticipantEventList registrations={registrations} onHistory={showHistory} historyOnly /> : <>
+          <button className="text-link participant-back-link" type="button" onClick={() => setSelectedRegistrationId("")}>← Semua event</button>
+          <ParticipantAssessment registration={selectedRegistration} />
+        </>}
+      </section>}
+      {activeSection === "payments" && <section className="participant-content-card">
+        <div className="participant-section-heading"><div><span className="eyebrow">Transaksi</span><h2>Pesanan saya</h2><p>Riwayat pembayaran, tiket, dan pesanan merchandise.</p></div></div>
+        {payments.map((payment) => <div className="participant-payment-row" key={payment.id}>
+          <span className="participant-payment-icon"><CreditCard size={18} /></span>
+          <div><strong>{payment.itemName || payment.event?.name || payment.product?.name || payment.type}</strong><small>{rupiah(payment.amount)} · {new Date(payment.createdAt).toLocaleDateString("id-ID")}{payment.schedule ? ` · ${formatDate(payment.schedule.startsAt)}` : ""}</small>{payment.adminContactPhone && <small>Pesanan lunas · Hubungi admin: {payment.adminContactPhone}</small>}{payment.tickets?.map((ticket) => <small className="ticket-code" key={ticket.id}>Tiket {ticket.code} · {formatDate(ticket.schedule?.startsAt)} · {ticket.status}</small>)}</div>
+          <span className={`state-badge state-${String(payment.status).toLowerCase()}`}>{payment.status}</span>
+        </div>)}
+        {!payments.length && <EmptyState icon={CreditCard} title="Belum ada transaksi" text="Pesanan dan pembayaran Anda akan muncul di sini." />}
+      </section>}
+      {activeSection === "profile" && <section className="participant-content-card participant-profile-page">
+        <div className="participant-section-heading"><div><span className="eyebrow">Akun</span><h2>Profil peserta</h2><p>Informasi akun yang digunakan untuk pendaftaran event.</p></div></div>
+        <div className="participant-profile-details"><div className="participant-profile-avatar"><UserRound size={30} /></div><div><h3>{user.name}</h3><span className={`state-badge state-${String(user.status).toLowerCase()}`}>{registrationStatusLabel(user.status)}</span></div></div>
+        <dl><div><dt>Email</dt><dd>{user.email || "—"}</dd></div><div><dt>Nomor telepon</dt><dd>{user.phone || "—"}</dd></div><div><dt>Asal satuan</dt><dd>{user.institution || "Belum diisi"}</dd></div></dl>
+      </section>}
+    </div>
+  </section>;
+}
+
+function ParticipantEventList({ registrations, onHistory, historyOnly = false }) {
+  if (!registrations.length) return <EmptyState icon={CalendarDays} title="Belum mengikuti event" text="Event yang Anda ikuti akan muncul di menu ini." />;
+  return <div className="participant-event-grid">{registrations.map((item) => <article className="participant-event-card" key={item.id}>
+    {item.event?.posterUrl ? <img src={item.event.posterUrl} alt={`Poster ${item.event.name}`} loading="lazy" /> : <div className="participant-event-placeholder"><Trophy size={27} /></div>}
+    <div className="participant-event-card-body">
+      <span className={`state-badge state-${String(item.status).toLowerCase()}`}>{registrationStatusLabel(item.status)}</span>
+      <h3>{item.event?.name || "Event"}</h3>
+      <p>{item.event?.institution || "Penyelenggara"} · {formatDate(item.event?.startsAt)}</p>
+      <small>{item.teamName && item.teamName !== item.participantName ? `${item.participantName} · ${item.teamName}` : item.teamName || item.participantName}</small>
+      {item.event?.announcement && <div className="participant-announcement"><strong>{item.event.announcement.title}</strong><p>{item.event.announcement.message}</p></div>}
+      <div className="participant-event-actions"><button className="button button-outline button-small" type="button" onClick={() => onHistory(item.id)}>{historyOnly ? "Lihat riwayat nilai" : "Lihat detail"} <ArrowRight size={14} /></button>{item.assessment?.tier && <small>{item.assessment.tier.name}</small>}</div>
+    </div>
+  </article>)}</div>;
+}
+
+function ParticipantAssessment({ registration }) {
+  const assessment = registration.assessment;
+  if (assessment?.error) return <div className="form-alert form-alert-error" role="alert">{assessment.error}</div>;
+  if (!assessment) return <EmptyState icon={Trophy} title="Riwayat nilai belum tersedia" text={registration.status === "APPROVED" ? "Penilaian event ini belum dikonfigurasi atau belum tersedia." : "Riwayat nilai akan tersedia setelah pendaftaran disetujui."} />;
+  const configuration = assessment.configuration || {};
+  const participant = assessment.participant || {};
+  const scoreEntries = Array.isArray(participant.scores) ? participant.scores : [];
+  const configuredCategories = Array.isArray(configuration.categories)
+    ? configuration.categories.filter((category) => category && typeof category === "object" && typeof category.id === "string")
+    : [];
+  const categories = configuredCategories.length ? configuredCategories : [...new Map(scoreEntries.map((score) => [
+    score.categoryId,
+    { id: score.categoryId, name: score.categoryName || "Kategori" }
+  ])).values()];
+  const judges = Array.isArray(configuration.judges)
+    ? configuration.judges.filter((judge) => judge && typeof judge === "object")
+    : [];
+  const penalties = Array.isArray(participant.penalties) ? participant.penalties : [];
+  const overall = assessment.overall;
+  const rankings = Array.isArray(assessment.rankings) ? assessment.rankings : [];
+  const categoryScore = (categoryId) => (Array.isArray(participant.categoryTotals) ? participant.categoryTotals.find((item) => item.id === categoryId) : null);
+  const categoryRows = categories.map((category) => ({
+    ...category,
+    criteria: scoreEntries.filter((criterion) => criterion.categoryId === category.id),
+    judges: judges.filter((judge) => (Array.isArray(judge.categoryIds) ? judge.categoryIds : []).includes(category.id))
+  }));
+  categoryRows.forEach((category) => {
+    if (!category.judges.length) category.judges = [...new Map(category.criteria.flatMap((criterion) => criterion.judgeScores || [])
+      .filter((score) => score.label)
+      .map((score) => [score.label, { id: score.label, label: score.label }])).values()];
+  });
+  const dantonCategories = categoryRows.filter((category) => category.rankingGroup === "danton" || /danton/i.test(`${category.name} ${category.id}`));
+  const dantonTotal = dantonCategories.reduce((sum, category) => sum + (categoryScore(category.id)?.total || 0), 0);
+  const formatScore = (value) => value === null || value === undefined ? "—" : String(Math.round(Number(value) || 0));
+  const rankingCards = rankings.filter((ranking) => ranking.id === "overall" || ranking.id === "danton");
+  return <div className="participant-assessment">
+    <div className="participant-assessment-heading"><div><h3>{registration.event?.name || "Event"}</h3><p>{registration.teamName || registration.participantName} · {assessment.tier?.name || "Tingkat 1"}</p></div><span className={`participant-score-state${participant.complete ? " is-complete" : ""}`}>{participant.complete ? "Nilai lengkap" : "Menunggu nilai"}</span></div>
+    <div className="participant-result-summary">
+      {rankingCards.map((ranking) => <article key={ranking.id}><span>{ranking.id === "overall" ? "Peringkat keseluruhan" : "Peringkat Danton"}</span><strong>{ranking.participant?.rank ? `#${ranking.participant.rank}` : "—"}</strong><small>{ranking.participant?.rankingTotal === null || ranking.participant?.rankingTotal === undefined ? "Belum lengkap" : `${formatScore(ranking.participant.rankingTotal)} poin`}</small>{ranking.comparisonLabel && <small>Pembanding: {ranking.comparisonLabel} · {formatScore(ranking.participant?.comparisonValue)}</small>}</article>)}
+      <article><span>Waktu tampil</span><strong>{participant.performanceTime || "—"}</strong><small>{configuration.settings?.maxPerformanceTime ? `Batas ${configuration.settings.maxPerformanceTime}` : "Tidak ada batas waktu"}</small></article>
+      <article><span>Total penalti</span><strong>{formatScore(participant.penaltyTotal || 0)}</strong><small>{penalties.length ? penalties.map((penalty) => `${penalty.name} × ${penalty.quantity}`).join(" · ") : "Tidak ada penalti"}</small></article>
+      <article><span>Nilai akhir</span><strong>{overall?.total === null || overall?.total === undefined ? "—" : formatScore(overall.total)}</strong><small>Nilai tertimbang setelah penalti</small></article>
+    </div>
+    {dantonCategories.length > 0 && <div className="participant-danton-total"><Trophy size={18} /><span>Total kategori Danton PBB + Danton Variasi dan Formasi</span><strong>{formatScore(dantonTotal)}</strong></div>}
+    {!categoryRows.length ? <EmptyState icon={Trophy} title="Format penilaian belum tersedia" text="Penyelenggara belum menerapkan format penilaian pada tingkatan ini." /> : <div className="participant-score-categories">
+      {categoryRows.map((category) => <article className="participant-score-category" key={category.id}>
+        <div className="participant-score-category-heading"><h4>{category.name}</h4><strong>{formatScore(categoryScore(category.id)?.total)}</strong></div>
+        {!category.criteria.length ? <p className="empty-inline">Belum ada rincian nilai pada kategori ini.</p> : <div className="participant-score-table-wrap"><table className="participant-score-table">
+          <thead><tr><th>Kriteria</th>{category.judges.map((judge) => <th key={judge.id}>{judge.label || judge.name}</th>)}<th>Total</th></tr></thead>
+          <tbody>{category.criteria.map((criterion) => <tr key={criterion.criterionId}><td>{criterion.name}</td>{category.judges.map((judge) => <td key={judge.id}>{formatScore(criterion.judgeScores?.find((score) => score.label === (judge.label || judge.name))?.value)}</td>)}<td>{formatScore(criterion.total)}</td></tr>)}</tbody>
+        </table></div>}
+      </article>)}
+    </div>}
+  </div>;
+}
+
+function localDateValue(value) {
+  return dateInputValue(value);
 }
 
 function OrganizerEventRow({ event, onSaved }) {
@@ -832,14 +1000,14 @@ function OrganizerEventRow({ event, onSaved }) {
     description: event.description,
     location: event.location,
     posterUrl: event.posterUrl,
-    schedules: event.schedules?.length ? event.schedules.map((date) => ({ startsAt: localDateTimeValue(date.startsAt), endsAt: localDateTimeValue(date.endsAt) })) : event.startsAt ? [{ startsAt: localDateTimeValue(event.startsAt), endsAt: localDateTimeValue(event.endsAt) }] : [{ startsAt: "", endsAt: "" }]
+    schedules: event.schedules?.length ? event.schedules.map((date) => ({ startsAt: localDateValue(date.startsAt), endsAt: localDateValue(date.endsAt) })) : event.startsAt ? [{ startsAt: localDateValue(event.startsAt), endsAt: localDateValue(event.endsAt) }] : [{ startsAt: "", endsAt: "" }]
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const save = async (e) => {
     e.preventDefault(); setBusy(true); setError("");
     try {
-      const schedules = form.schedules.filter((date) => date.startsAt).map((date) => ({ startsAt: new Date(date.startsAt).toISOString(), endsAt: date.endsAt ? new Date(date.endsAt).toISOString() : "" }));
+      const schedules = form.schedules.filter((date) => date.startsAt).map((date) => ({ startsAt: dateInputToIso(date.startsAt), endsAt: dateInputToIso(date.endsAt, true) }));
       const { posterFile, ...fields } = form;
       await api(`/events/${event.id}`, { method: "PATCH", body: JSON.stringify({ ...fields, schedules }) });
       if (posterFile) {
@@ -864,47 +1032,10 @@ function OrganizerEventRow({ event, onSaved }) {
       {form.posterUrl && <img className="event-poster-preview" src={form.posterUrl} alt={`Poster ${form.name}`} />}
       <label className="form-wide">Poster event<input type="file" accept="image/jpeg,image/png,image/webp" onChange={(e) => setForm({ ...form, posterFile: e.target.files?.[0] || null })} /><small>Unggah JPEG, PNG, atau WebP; maksimal 5 MB.</small></label>
       <label>Deskripsi<textarea maxLength="3000" rows="3" value={form.description || ""} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
-      <div className="event-date-list">{form.schedules.map((date, index) => <div className="event-date-row" key={index}><label>Tanggal mulai<input type="datetime-local" value={date.startsAt} onChange={(e) => setForm({ ...form, schedules: form.schedules.map((item, i) => i === index ? { ...item, startsAt: e.target.value } : item) })} /></label><label>Tanggal selesai<input type="datetime-local" value={date.endsAt} onChange={(e) => setForm({ ...form, schedules: form.schedules.map((item, i) => i === index ? { ...item, endsAt: e.target.value } : item) })} /></label>{form.schedules.length > 1 && <button type="button" className="reject-button" aria-label={`Hapus tanggal ${index + 1}`} onClick={() => setForm({ ...form, schedules: form.schedules.filter((_, i) => i !== index) })}><X size={15} /></button>}</div>)}<button className="text-link" type="button" onClick={() => setForm({ ...form, schedules: [...form.schedules, { startsAt: "", endsAt: "" }] })}><CalendarDays size={14} /> Tambah tanggal</button></div>
+      <div className="event-date-list">{form.schedules.map((date, index) => <div className="event-date-row" key={index}><label>Tanggal mulai<input type="date" value={date.startsAt} onChange={(e) => setForm({ ...form, schedules: form.schedules.map((item, i) => i === index ? { ...item, startsAt: e.target.value } : item) })} /></label><label>Tanggal selesai<input type="date" value={date.endsAt} onChange={(e) => setForm({ ...form, schedules: form.schedules.map((item, i) => i === index ? { ...item, endsAt: e.target.value } : item) })} /></label>{form.schedules.length > 1 && <button type="button" className="reject-button" aria-label={`Hapus tanggal ${index + 1}`} onClick={() => setForm({ ...form, schedules: form.schedules.filter((_, i) => i !== index) })}><X size={15} /></button>}</div>)}<button className="text-link" type="button" onClick={() => setForm({ ...form, schedules: [...form.schedules, { startsAt: "", endsAt: "" }] })}><CalendarDays size={14} /> Tambah tanggal</button></div>
       <button className="button button-primary" type="submit" disabled={busy}>{busy ? "Menyimpan..." : "Simpan perubahan"}</button>
     </form>}
   </div>;
-}
-
-function JudgeScoring({ events }) {
-  const [eventId, setEventId] = useState(events[0]?.id || "");
-  const [data, setData] = useState(null);
-  const [drafts, setDrafts] = useState({});
-  const [busy, setBusy] = useState("");
-  const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
-  useEffect(() => {
-    setData(null); setError("");
-    api(`/judge/events/${eventId}/scoring`).then((result) => {
-      setData(result);
-      setDrafts(Object.fromEntries(result.scores.map((score) => [`${score.registrationId}:${score.criterionId}`, String(score.value)])));
-    }).catch((requestError) => setError(requestError.message));
-  }, [eventId]);
-  const saveScore = async (registrationId, criterion) => {
-    const key = `${registrationId}:${criterion.id}`;
-    const value = Number(drafts[key]);
-    if (!Number.isFinite(value) || value < criterion.minScore || value > criterion.maxScore) {
-      setError(`Nilai ${criterion.name} harus berada pada rentang ${criterion.minScore} sampai ${criterion.maxScore}.`); return;
-    }
-    setBusy(key); setError(""); setNotice("");
-    try {
-      await api(`/events/${eventId}/scores`, { method: "POST", body: JSON.stringify({ registrationId, criterionId: criterion.id, value }) });
-      setNotice("Nilai berhasil disimpan.");
-    } catch (requestError) { setError(requestError.message); }
-    finally { setBusy(""); }
-  };
-  return <article className="dashboard-panel judge-scoring-panel"><span className="eyebrow">INPUT PENILAIAN JURI</span><h2>Penilaian event</h2>
-    <label className="scoring-event-picker">Event<select value={eventId} onChange={(event) => setEventId(event.target.value)}>{events.map((event) => <option key={event.id} value={event.id}>{event.name}</option>)}</select></label>
-    {error && <div className="form-alert form-alert-error" role="alert">{error}</div>}{notice && <div className="form-alert" role="status">{notice}</div>}
-    {!data && !error ? <p className="empty-inline">Memuat peserta dan kriteria...</p> : data && !data.criteria.length ? <p className="empty-inline">Kriteria untuk event ini belum disiapkan oleh Tim Rekap.</p> : data?.participants.map((participant) => <div className="judge-score-card" key={participant.id}><strong>{participant.teamName || participant.participantName}</strong><small>{participant.participantName}</small>{data.criteria.map((criterion) => {
-      const key = `${participant.id}:${criterion.id}`;
-      return <form className="judge-score-input" key={criterion.id} onSubmit={(event) => { event.preventDefault(); saveScore(participant.id, criterion); }}><label>{criterion.name}<input required type="number" min={criterion.minScore} max={criterion.maxScore} step="any" value={drafts[key] ?? ""} onChange={(event) => setDrafts({ ...drafts, [key]: event.target.value })} /></label><button className="button button-outline button-small" type="submit" disabled={Boolean(busy)}>{busy === key ? "Menyimpan..." : "Simpan nilai"}</button></form>;
-    })}</div>)}
-  </article>;
 }
 
 function OrganizerEventForm({ eventForm, setEventForm, onEventCreate, busyId }) {
@@ -918,7 +1049,7 @@ function OrganizerEventForm({ eventForm, setEventForm, onEventCreate, busyId }) 
       <label>Asal satuan<input required minLength="2" maxLength="120" value={eventForm.institution} onChange={(event) => setEventForm({ ...eventForm, institution: event.target.value })} /></label>
       <label>Lokasi<input maxLength="200" value={eventForm.location} onChange={(event) => setEventForm({ ...eventForm, location: event.target.value })} /></label>
       <label className="form-wide">Poster event<input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setEventForm({ ...eventForm, posterFile: event.target.files?.[0] || null })} /><small>Unggah JPEG, PNG, atau WebP; maksimal 5 MB.</small></label>
-      <div className="event-date-list">{eventForm.schedules.map((date, index) => <div className="event-date-row" key={index}><label>Tanggal mulai<input type="datetime-local" value={date.startsAt} onChange={(event) => updateDate(index, "startsAt", event.target.value)} /></label><label>Tanggal selesai<input type="datetime-local" value={date.endsAt} onChange={(event) => updateDate(index, "endsAt", event.target.value)} /></label>{eventForm.schedules.length > 1 && <button type="button" className="reject-button" aria-label={`Hapus tanggal ${index + 1}`} onClick={() => setEventForm({ ...eventForm, schedules: eventForm.schedules.filter((_, i) => i !== index) })}><X size={15} /></button>}</div>)}<button className="text-link" type="button" onClick={() => setEventForm({ ...eventForm, schedules: [...eventForm.schedules, { startsAt: "", endsAt: "" }] })}><CalendarDays size={14} /> Tambah tanggal</button></div>
+      <div className="event-date-list">{eventForm.schedules.map((date, index) => <div className="event-date-row" key={index}><label>Tanggal mulai<input type="date" value={date.startsAt} onChange={(event) => updateDate(index, "startsAt", event.target.value)} /></label><label>Tanggal selesai<input type="date" value={date.endsAt} onChange={(event) => updateDate(index, "endsAt", event.target.value)} /></label>{eventForm.schedules.length > 1 && <button type="button" className="reject-button" aria-label={`Hapus tanggal ${index + 1}`} onClick={() => setEventForm({ ...eventForm, schedules: eventForm.schedules.filter((_, i) => i !== index) })}><X size={15} /></button>}</div>)}<button className="text-link" type="button" onClick={() => setEventForm({ ...eventForm, schedules: [...eventForm.schedules, { startsAt: "", endsAt: "" }] })}><CalendarDays size={14} /> Tambah tanggal</button></div>
       <label className="event-description-field">Deskripsi<textarea maxLength="3000" rows="3" value={eventForm.description} onChange={(event) => setEventForm({ ...eventForm, description: event.target.value })} /></label>
       <button className="button button-primary" type="submit" disabled={busyId === "event-create"}>{busyId === "event-create" ? "Menyimpan..." : "Ajukan event"}<ArrowRight size={15} /></button>
     </form>
@@ -972,13 +1103,12 @@ function DashboardPage({ user, summary, data, section, setSection, busyId, produ
     </div>
     <div className="dashboard-layout">
       <aside className="dashboard-sidebar">
-        {sections.map(({ id, label, icon: Icon }) => <button key={id} className={section === id ? "is-active" : ""} onClick={() => setSection(id)} type="button"><Icon size={17} />{label}<ArrowRight size={14} /></button>)}
-        <div className="sidebar-note"><ShieldCheck size={16} /><span>Akun staf terlindungi. Tinjau pengajuan sebelum dipublikasikan.</span></div>
+        {sections.map(({ id, label, icon: Icon }) => <button key={id} className={section === id ? "is-active" : ""} onClick={() => setSection(id)} type="button" aria-label={label} title={label}><Icon size={19} aria-hidden="true" /><span className="visually-hidden">{label}</span></button>)}
       </aside>
       <div className="dashboard-content">
         {!summary ? <div className="dashboard-wait"><span className="loader-orbit" /><span>Memuat data dashboard...</span></div> : section === "overview" ? <>
           <div className="dashboard-welcome"><div><span className="eyebrow">RINGKASAN PLATFORM</span><h2>Aktivitas Rekap Baris</h2></div><span className="live-pill"><i /> DATA TERBARU</span></div>
-          <div className="metric-grid"><Metric label="Total akun" value={summary.users} icon={Users} /><Metric label="Menunggu verifikasi" value={summary.pendingUsers} icon={Clock3} tone="yellow" /><Metric label="Event terdaftar" value={summary.events} icon={CalendarDays} /><Metric label="Juri terdaftar" value={summary.judges} icon={Trophy} tone="yellow" /></div>
+          <div className="metric-grid"><Metric label="Total akun" value={summary.users} icon={Users} /><Metric label="Menunggu verifikasi" value={summary.pendingUsers} icon={Clock3} tone="yellow" /><Metric label="Event terdaftar" value={summary.events} icon={CalendarDays} /></div>
           <div className="dashboard-panels">
             <div className="dashboard-panel"><div className="panel-heading"><div><span className="eyebrow">PERLU TINDAKAN</span><h3>Pengajuan terbaru</h3></div><button className="text-link" type="button" onClick={() => setSection("users")}>Lihat akun <ArrowRight size={14} /></button></div>
               {data.users.filter((item) => item.status === "PENDING").slice(0, 4).map((item) => <div className="mini-row" key={item.id}><span className="mini-avatar"><UserRound size={15} /></span><div><strong>{item.name}</strong><small>{item.role} · {item.email}</small></div><span className="pending-badge">Pending</span></div>)}
@@ -986,8 +1116,8 @@ function DashboardPage({ user, summary, data, section, setSection, busyId, produ
             </div>
             <div className="dashboard-panel revenue-panel"><span className="eyebrow">PEMBAYARAN TERVERIFIKASI</span><strong>{rupiah(summary.revenue)}</strong><p>{summary.settledPayments} transaksi berhasil tercatat.</p><div className="revenue-decoration"><CreditCard size={27} /></div></div>
           </div>
-        </> : section === "scoring" ? <ScoringModule events={data.events} users={data.users} onRefresh={onRefresh} /> : section === "users" ? <>
-          <PanelTitle kicker="MANAJEMEN AKUN" title="Akun pengguna" text="Tinjau data dan persetujuan pendaftaran peserta, penyelenggara, serta juri." />
+        </> : section === "scoring" ? <ScoringModule events={data.events} /> : section === "users" ? <>
+          <PanelTitle kicker="MANAJEMEN AKUN" title="Akun pengguna" text="Tinjau data dan persetujuan pendaftaran peserta serta penyelenggara." />
           <div className="staff-table">{data.users.map((item) => <div className="staff-row" key={item.id}>
             <div className="staff-person"><span className="mini-avatar"><UserRound size={15} /></span><div><strong>{item.name}</strong><small>{[item.email, item.phone, item.institution, item.eventName].filter(Boolean).join(" · ")}</small></div></div>
             <span className={`state-badge state-${item.status.toLowerCase()}`}>{item.status}</span><span className="role-label">{item.role}</span>
@@ -1002,7 +1132,7 @@ function DashboardPage({ user, summary, data, section, setSection, busyId, produ
             <label>Sekolah / institusi<input required minLength="2" maxLength="120" value={eventForm.institution} onChange={(event) => setEventForm({ ...eventForm, institution: event.target.value })} /></label>
             <label>Lokasi<input maxLength="200" value={eventForm.location} onChange={(event) => setEventForm({ ...eventForm, location: event.target.value })} /></label>
             <label className="form-wide">Poster event<input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setEventForm({ ...eventForm, posterFile: event.target.files?.[0] || null })} /><small>Unggah JPEG, PNG, atau WebP; maksimal 5 MB.</small></label>
-            <div className="event-date-list">{eventForm.schedules.map((date, index) => <div className="event-date-row" key={index}><label>Tanggal mulai<input type="datetime-local" value={date.startsAt} onChange={(event) => setEventForm({ ...eventForm, schedules: eventForm.schedules.map((item, i) => i === index ? { ...item, startsAt: event.target.value } : item) })} /></label><label>Tanggal selesai<input type="datetime-local" value={date.endsAt} onChange={(event) => setEventForm({ ...eventForm, schedules: eventForm.schedules.map((item, i) => i === index ? { ...item, endsAt: event.target.value } : item) })} /></label>{eventForm.schedules.length > 1 && <button type="button" className="reject-button" aria-label={`Hapus tanggal ${index + 1}`} onClick={() => setEventForm({ ...eventForm, schedules: eventForm.schedules.filter((_, i) => i !== index) })}><X size={15} /></button>}</div>)}<button className="text-link" type="button" onClick={() => setEventForm({ ...eventForm, schedules: [...eventForm.schedules, { startsAt: "", endsAt: "" }] })}><CalendarDays size={14} /> Tambah tanggal</button></div>
+            <div className="event-date-list">{eventForm.schedules.map((date, index) => <div className="event-date-row" key={index}><label>Tanggal mulai<input type="date" value={date.startsAt} onChange={(event) => setEventForm({ ...eventForm, schedules: eventForm.schedules.map((item, i) => i === index ? { ...item, startsAt: event.target.value } : item) })} /></label><label>Tanggal selesai<input type="date" value={date.endsAt} onChange={(event) => setEventForm({ ...eventForm, schedules: eventForm.schedules.map((item, i) => i === index ? { ...item, endsAt: event.target.value } : item) })} /></label>{eventForm.schedules.length > 1 && <button type="button" className="reject-button" aria-label={`Hapus tanggal ${index + 1}`} onClick={() => setEventForm({ ...eventForm, schedules: eventForm.schedules.filter((_, i) => i !== index) })}><X size={15} /></button>}</div>)}<button className="text-link" type="button" onClick={() => setEventForm({ ...eventForm, schedules: [...eventForm.schedules, { startsAt: "", endsAt: "" }] })}><CalendarDays size={14} /> Tambah tanggal</button></div>
             <label>Harga tiket (IDR)<input type="number" min="0" max="100000000" value={eventForm.ticketPrice} onChange={(event) => setEventForm({ ...eventForm, ticketPrice: event.target.value })} /></label>
             <label>Harga vote (IDR)<input type="number" min="1000" max="10000000" value={eventForm.votePrice} onChange={(event) => setEventForm({ ...eventForm, votePrice: event.target.value })} /></label>
             <label className="event-description-field">Deskripsi<textarea maxLength="3000" rows="3" value={eventForm.description} onChange={(event) => setEventForm({ ...eventForm, description: event.target.value })} /></label>
@@ -1032,189 +1162,6 @@ function DashboardPage({ user, summary, data, section, setSection, busyId, produ
       </div>
     </div>
   </section>;
-}
-
-function ScoringModule({ events = [], users = [], onRefresh }) {
-  const [eventId, setEventId] = useState("");
-  const [scoringTab, setScoringTab] = useState("configuration");
-  const [scoring, setScoring] = useState(null);
-  const [criterionName, setCriterionName] = useState("");
-  const [criterionWeight, setCriterionWeight] = useState("1");
-  const [judgeId, setJudgeId] = useState("");
-  const [scoreJudgeId, setScoreJudgeId] = useState("");
-  const [selectedParticipantId, setSelectedParticipantId] = useState("");
-  const [scoreDrafts, setScoreDrafts] = useState({});
-  const [defaultCriteria, setDefaultCriteria] = useState(["PBB", "Danton", "Varfor", "Kostum"]);
-  const [judgeForm, setJudgeForm] = useState({ name: "", email: "", phone: "" });
-  const [busy, setBusy] = useState(false);
-  const [showRanking, setShowRanking] = useState(false);
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState("");
-  const [formats, setFormats] = useState([]);
-  const [formatId, setFormatId] = useState("");
-  const [formatName, setFormatName] = useState("");
-  const judges = users.filter((item) => item.role === "JUDGE" && item.status === "ACTIVE");
-
-  useEffect(() => {
-    if (!eventId && events.length) setEventId(events[0].id);
-  }, [eventId, events]);
-
-  useEffect(() => { api("/admin/scoring-formats").then((result) => setFormats(result.formats || [])).catch((loadError) => setError(loadError.message)); }, []);
-
-  const load = async () => {
-    if (!eventId) return;
-    setBusy(true);
-    setError("");
-    try {
-      const result = await api(`/admin/scoring/${eventId}`);
-      setScoring(result);
-      setSelectedParticipantId((current) => result.participants.some((participant) => participant.registrationId === current) ? current : "");
-      setScoreJudgeId((current) => result.judges.some((judge) => judge.id === current) ? current : result.judges[0]?.id || "");
-      setScoreDrafts(Object.fromEntries((result.scoreEntries || []).map((score) => [`${score.registrationId}:${score.criterionId}:${score.judgeId}`, String(score.value)])));
-    }
-    catch (requestError) { setError(requestError.message); }
-    finally { setBusy(false); }
-  };
-  useEffect(() => { setScoring(null); setSelectedParticipantId(""); load(); }, [eventId]);
-
-  const run = async (action, successText) => {
-    setBusy(true); setError(""); setMessage("");
-    try { await action(); await load(); setMessage(successText); return true; }
-    catch (requestError) { setError(requestError.message); return false; }
-    finally { setBusy(false); }
-  };
-  const createCriterion = async (event) => {
-    event.preventDefault();
-    if (await run(() => api(`/admin/scoring/${eventId}/criteria`, { method: "POST", body: JSON.stringify({ name: criterionName, weight: Number(criterionWeight) }) }), "Kriteria berhasil ditambahkan.")) setCriterionName("");
-  };
-
-  const createJudge = (event) => {
-    event.preventDefault();
-    return run(async () => {
-      await api("/admin/judges", { method: "POST", body: JSON.stringify(judgeForm) });
-      setJudgeForm({ name: "", email: "", phone: "" });
-      await onRefresh();
-    }, "Akun juri dibuat. Aktifkan akun dan minta juri mengatur password melalui WhatsApp reset.");
-  };
-  const addJudge = (event) => {
-    event.preventDefault();
-    return run(() => api(`/admin/scoring/${eventId}/judges`, { method: "POST", body: JSON.stringify({ judgeId }) }), "Juri ditugaskan pada event.");
-  };
-
-  if (!events.length) return <><PanelTitle kicker="REKAPITULASI" title="Rekap penilaian" text="Pilih event yang sudah tercatat untuk mulai mengatur kriteria dan juri." /><p className="empty-inline">Belum ada event. Tambahkan event terlebih dahulu.</p></>;
-  return <div className="scoring-module">
-    <PanelTitle kicker="REKAPITULASI PENILAIAN" title="Kelola penilaian event" text="Kriteria, juri, nilai, dan ranking dibatasi pada event pilihan." />
-    <nav className="member-dashboard-tabs" aria-label="Menu rekapitulasi penilaian">
-      <button className={scoringTab === "configuration" ? "is-active" : ""} type="button" onClick={() => setScoringTab("configuration")}>Konfigurasi Format Nilai</button>
-      <button className={scoringTab === "recap" ? "is-active" : ""} type="button" onClick={() => setScoringTab("recap")}>Rekap Penilaian</button>
-    </nav>
-    {scoringTab === "configuration" && <>
-    <label className="scoring-event-picker">Event<select value={eventId} onChange={(event) => setEventId(event.target.value)}>{events.map((event) => <option key={event.id} value={event.id}>{event.name} · {event.status}</option>)}</select></label>
-    <div className="dashboard-panel scoring-panel"><div className="panel-heading"><div><span className="eyebrow">FORMAT PENILAIAN</span><h3>Gunakan format tersimpan</h3></div></div><div className="scoring-inline-form"><label>Nama format untuk disimpan<input value={formatName} maxLength="100" onChange={(event) => setFormatName(event.target.value)} placeholder="Contoh: Format LKBB 2026" /></label><button className="button button-outline" type="button" disabled={busy || !formatName.trim() || !scoring?.criteria.length} onClick={async () => { await run(async () => { const result = await api("/admin/scoring-formats/from-event", { method: "POST", body: JSON.stringify({ eventId, name: formatName }) }); setFormats((current) => [result.format, ...current]); setFormatId(result.format.id); setFormatName(""); }, "Format tersimpan sebagai salinan kriteria dan juri event."); }}>Simpan format dari event</button></div><div className="scoring-inline-form"><label>Format<select value={formatId} onChange={(event) => setFormatId(event.target.value)}><option value="">Pilih format</option>{formats.map((format) => <option key={format.id} value={format.id}>{format.name}</option>)}</select></label><button className="button button-primary" type="button" disabled={busy || !eventId || !formatId} onClick={() => { if (window.confirm("Format akan menyalin kriteria dan daftar juri ke event ini. Event dengan nilai tersimpan tidak dapat diubah.")) run(() => api("/admin/scoring-formats/apply", { method: "POST", body: JSON.stringify({ eventId, formatId }) }), "Format disalin ke konfigurasi event."); }}>Apply ke Event</button></div><small>Format menyalin kriteria dan daftar juri ke event. Pengeditan format utama tidak mengubah konfigurasi event yang sudah diterapkan. Penggantian ditolak backend jika event sudah memiliki nilai.</small></div>
-    {error && <div className="form-alert form-alert-error" role="alert">{error}</div>}{message && <div className="form-alert" role="status">{message}</div>}
-    {busy && !scoring ? <p className="empty-inline">Memuat data penilaian...</p> : scoring && <>
-      <div className="dashboard-panel scoring-panel"><div className="panel-heading"><div><span className="eyebrow">PENGATURAN EVENT</span><h3>Kriteria penilaian</h3></div></div>
-        <div className="default-criteria-options">{["PBB", "Danton", "Varfor", "Kostum"].map((name) => <label key={name}><input type="checkbox" checked={defaultCriteria.includes(name)} onChange={(event) => setDefaultCriteria((current) => event.target.checked ? [...current, name] : current.filter((item) => item !== name))} /> {name}</label>)}<button type="button" className="button button-outline button-small" disabled={busy || !defaultCriteria.length} onClick={() => run(() => api(`/admin/scoring/${eventId}/default-criteria`, { method: "POST", body: JSON.stringify({ names: defaultCriteria }) }), `Kriteria bawaan ${defaultCriteria.join(", ")} tersedia.`)}>Tambah kriteria terpilih</button></div>
-        {scoring.criteria.map((criterion) => <div className="scoring-row" key={criterion.id}>
-          <strong>{criterion.name}</strong><span>Bobot {criterion.weight} · rentang {criterion.minScore}–{criterion.maxScore}</span>
-          <label><input type="checkbox" checked={criterion.active} disabled={busy} onChange={(event) => {
-            const used = scoring.participants.some((participant) => participant.scores.some((score) => score.criterionId === criterion.id && score.submitted > 0));
-            if (used && !window.confirm("Kriteria ini sudah memiliki nilai. Perubahan status akan menghitung ulang ranking sementara. Lanjutkan?")) return;
-            run(() => api(`/admin/scoring/${eventId}/criteria/${criterion.id}`, { method: "PATCH", body: JSON.stringify({ active: event.target.checked, confirmRecalculation: used }) }), "Status kriteria diperbarui.");
-          }} /> Aktif</label>
-          <details className="criterion-edit"><summary>Edit / hapus</summary>
-            <form className="scoring-inline-form" onSubmit={(event) => {
-              event.preventDefault(); const values = new FormData(event.currentTarget);
-              run(() => api(`/admin/scoring/${eventId}/criteria/${criterion.id}`, { method: "PATCH", body: JSON.stringify({ name: values.get("name"), weight: Number(values.get("weight")), minScore: Number(values.get("minScore")), maxScore: Number(values.get("maxScore")) }) }), "Kriteria diperbarui.");
-            }}>
-              <label>Nama<input name="name" required minLength="2" maxLength="80" defaultValue={criterion.name} /></label>
-              <label>Bobot<input name="weight" type="number" min="0.01" max="1000" step="0.01" required defaultValue={criterion.weight} /></label>
-              <label>Nilai minimum<input name="minScore" type="number" min="0" max="100000" step="any" required defaultValue={criterion.minScore} /></label>
-              <label>Nilai maksimum<input name="maxScore" type="number" min="0" max="100000" step="any" required defaultValue={criterion.maxScore} /></label>
-              <button className="button button-outline button-small" disabled={busy} type="submit">Simpan kriteria</button>
-              <button className="reject-button" disabled={busy} type="button" onClick={() => {
-                if (window.confirm(`Hapus kriteria ${criterion.name}?`)) run(() => api(`/admin/scoring/${eventId}/criteria/${criterion.id}`, { method: "DELETE" }), "Kriteria dihapus.");
-              }}>Hapus</button>
-            </form>
-          </details>
-        </div>)}
-        {!scoring.criteria.length && <p className="empty-inline">Kriteria belum diatur. Tambahkan kriteria bawaan atau buat kriteria sendiri.</p>}
-        <form className="scoring-inline-form" onSubmit={createCriterion}><label>Nama kriteria<input required minLength="2" maxLength="80" value={criterionName} onChange={(event) => setCriterionName(event.target.value)} /></label><label>Bobot<input type="number" min="0.01" step="0.01" max="1000" required value={criterionWeight} onChange={(event) => setCriterionWeight(event.target.value)} /></label><button className="button button-primary" disabled={busy || !eventId} type="submit">Tambah kriteria</button></form>
-      </div>
-      <div className="dashboard-panel scoring-panel"><div className="panel-heading"><div><span className="eyebrow">PENUGASAN</span><h3>Juri event</h3></div></div>
-        {scoring.judges.map((judge) => <div className="scoring-row" key={judge.id}><strong>{judge.name}</strong><span>{judge.email} · {judge.status}</span><button className="reject-button" disabled={busy} type="button" onClick={() => {
-          if (window.confirm(`Lepas penugasan ${judge.name} dari event? Nilai tersimpan tetap ada, tetapi tidak dihitung dalam ranking sampai juri ditugaskan kembali.`)) run(() => api(`/admin/scoring/${eventId}/judges/${judge.id}`, { method: "DELETE" }), "Penugasan juri dilepas.");
-        }}>Lepas</button><details className="criterion-edit"><summary>Edit data juri</summary><form className="scoring-inline-form" onSubmit={(event) => {
-          event.preventDefault(); const values = new FormData(event.currentTarget);
-          run(async () => { await api(`/admin/judges/${judge.id}`, { method: "PATCH", body: JSON.stringify({ name: values.get("name"), email: values.get("email"), phone: values.get("phone") }) }); await onRefresh(); }, "Data juri diperbarui.");
-        }}><label>Nama<input name="name" required minLength="2" maxLength="120" defaultValue={judge.name} /></label><label>Email<input name="email" required type="email" defaultValue={judge.email} /></label><label>WhatsApp<input name="phone" required type="tel" defaultValue={judge.phone || ""} /></label><button className="button button-outline button-small" disabled={busy} type="submit">Simpan data juri</button><small>Juri aktif dapat menggunakan fitur lupa password untuk mengatur atau mengganti akses melalui WhatsApp.</small></form></details></div>)}
-        {!scoring.judges.length && <p className="empty-inline">Belum ada juri yang ditugaskan.</p>}
-        <form className="scoring-inline-form" onSubmit={addJudge}><label>Juri aktif<select required value={judgeId} onChange={(event) => setJudgeId(event.target.value)}><option value="">Pilih juri</option>{judges.filter((judge) => !scoring.judges.some((assigned) => assigned.id === judge.id)).map((judge) => <option key={judge.id} value={judge.id}>{judge.name} · {judge.email}</option>)}</select></label><button className="button button-primary" disabled={busy || !judgeId} type="submit">Tugaskan juri</button></form>
-        <details className="scoring-create-judge"><summary>Buat akun juri</summary><form className="scoring-inline-form" onSubmit={createJudge}><label>Nama<input required minLength="2" maxLength="120" value={judgeForm.name} onChange={(event) => setJudgeForm({ ...judgeForm, name: event.target.value })} /></label><label>Email<input required type="email" value={judgeForm.email} onChange={(event) => setJudgeForm({ ...judgeForm, email: event.target.value })} /></label><label>Nomor WhatsApp<input required type="tel" value={judgeForm.phone} onChange={(event) => setJudgeForm({ ...judgeForm, phone: event.target.value })} /></label><button className="button button-outline" disabled={busy} type="submit">Buat akun pending</button></form></details>
-      </div>
-    </>}
-    </>}
-    {scoringTab === "recap" && <>
-      <div className="dashboard-panel scoring-panel"><div className="panel-heading"><div><span className="eyebrow">DAFTAR EVENT</span><h3>Pilih event untuk melihat peserta</h3></div></div>
-        {!events.length ? <p className="empty-inline">Belum ada event.</p> : events.map((event) => <button className={`scoring-event-row ${event.id === eventId ? "is-selected" : ""}`} type="button" key={event.id} onClick={() => { setEventId(event.id); setSelectedParticipantId(""); setShowRanking(true); }}><strong>{event.name}</strong><span>{event.status}</span><small>{event.institution} · {event._count?.registrations ?? 0} pendaftar</small></button>)}
-      </div>
-      {error && <div className="form-alert form-alert-error" role="alert">{error}</div>}{message && <div className="form-alert" role="status">{message}</div>}
-      {busy && !scoring ? <p className="empty-inline">Memuat peserta dan nilai...</p> : scoring && <>
-        <div className="dashboard-panel scoring-panel"><div className="panel-heading"><div><span className="eyebrow">PESERTA EVENT</span><h3>{scoring.event.name}</h3></div></div>
-          {!scoring.participants.length ? <p className="empty-inline">Belum ada peserta yang disetujui pada event ini.</p> : scoring.participants.map((participant) => <button className={`scoring-participant-row ${selectedParticipantId === participant.registrationId ? "is-selected" : ""}`} type="button" key={participant.registrationId} onClick={() => setSelectedParticipantId(participant.registrationId)}><strong>{participant.teamName || participant.participantName}</strong><span>{participant.complete ? `${participant.total.toFixed(2)} poin` : "Nilai belum lengkap"}</span><small>{participant.participantName}</small></button>)}
-        </div>
-        {selectedParticipantId && (() => {
-          const participant = scoring.participants.find((item) => item.registrationId === selectedParticipantId);
-          if (!participant) return null;
-          return <div className="dashboard-panel scoring-panel"><div className="panel-heading"><div><span className="eyebrow">INPUT NILAI</span><h3>{participant.teamName || participant.participantName}</h3></div></div>
-            {!scoring.judges.length ? <p className="empty-inline">Tugaskan juri aktif pada konfigurasi event sebelum memasukkan nilai.</p> : <>
-              <label className="scoring-event-picker">Catat nilai sebagai juri<select value={scoreJudgeId} onChange={(event) => setScoreJudgeId(event.target.value)}>{scoring.judges.map((judge) => <option key={judge.id} value={judge.id}>{judge.name}</option>)}</select></label>
-              <p className="dashboard-footnote">Admin/Tim Rekap dapat mencatat nilai untuk juri yang ditugaskan. Pastikan juri yang dipilih sesuai dengan lembar penilaian.</p>
-              {participant.scores.map((criterion) => {
-                const key = `${participant.registrationId}:${criterion.criterionId}:${scoreJudgeId}`;
-                const existing = (scoring.scoreEntries || []).find((score) => score.registrationId === participant.registrationId && score.criterionId === criterion.criterionId && score.judgeId === scoreJudgeId);
-                return <form className="scoring-inline-form" key={criterion.criterionId} onSubmit={(event) => {
-                  event.preventDefault();
-                  const value = Number(scoreDrafts[key]);
-                  if (!Number.isFinite(value) || value < criterion.minScore || value > criterion.maxScore) {
-                    setError(`Nilai ${criterion.name} harus berada pada rentang ${criterion.minScore} sampai ${criterion.maxScore}.`);
-                    return;
-                  }
-                  run(() => api(`/events/${eventId}/scores`, { method: "POST", body: JSON.stringify({ registrationId: participant.registrationId, criterionId: criterion.criterionId, value, judgeId: scoreJudgeId }) }), `Nilai ${criterion.name} berhasil disimpan.`);
-                }}><label>{criterion.name} (rentang {criterion.minScore}–{criterion.maxScore})<input required type="number" min={criterion.minScore} max={criterion.maxScore} step="any" value={scoreDrafts[key] ?? (existing ? String(existing.value) : "")} onChange={(event) => setScoreDrafts({ ...scoreDrafts, [key]: event.target.value })} /></label><button className="button button-outline button-small" type="submit" disabled={busy || !scoreJudgeId}>{busy ? "Menyimpan..." : "Simpan nilai"}</button></form>;
-              })}
-              {!participant.scores.length && <p className="empty-inline">Belum ada kriteria aktif untuk event ini.</p>}
-            </>}
-          </div>;
-        })()}
-        <div className="dashboard-panel scoring-panel"><div className="panel-heading"><div><span className="eyebrow">RANKING SEMENTARA</span><h3>Hasil dari nilai tersimpan</h3></div><button type="button" className="button button-outline button-small" onClick={() => setShowRanking((open) => !open)}>{showRanking ? "Tutup ranking" : "Detail ranking sementara"}</button></div>
-          {showRanking && <><p className="dashboard-footnote">Metode: rata-rata nilai tiap kriteria antar juri, dikalikan bobot, lalu dijumlahkan. Peserta belum lengkap tidak diberi peringkat; nilai seri berbagi peringkat.</p>
-          {!scoring.participants.length ? <p className="empty-inline">Belum ada peserta yang disetujui untuk event ini.</p> : scoring.participants.map((participant) => <div className="scoring-rank-row" key={participant.registrationId}><strong>{participant.rank ? `#${participant.rank}` : "—"}</strong><div><b>{participant.teamName || participant.participantName}</b><small>{participant.scores.map((score) => `${score.name}: ${score.average === null ? "Belum dinilai" : score.average.toFixed(2)}`).join(" · ") || "Belum ada kriteria aktif"}</small></div><span>{participant.complete ? participant.total.toFixed(2) : "Belum lengkap"}</span></div>)}</>}
-        </div>
-      </>}
-    </>}
-  </div>;
-}
-
-function InventoryRow({ product, busy, onSave, onVariantUpdate, busyId }) {
-  const [stock, setStock] = useState(String(product.stock));
-  const [active, setActive] = useState(product.active);
-  useEffect(() => {
-    setStock(String(product.stock));
-    setActive(product.active);
-  }, [product.stock, product.active]);
-  return <><form className="inventory-row" onSubmit={(event) => { event.preventDefault(); onSave({ stock: Number(stock), active }); }}>
-    <div className="inventory-product"><strong>{product.name}</strong><small>{rupiah(product.price)} · {product.active ? "Aktif di toko" : "Disembunyikan"}</small></div>
-    {!product.variants?.length && <label>Stok<input aria-label={`Stok ${product.name}`} type="number" min="0" max="100000" value={stock} onChange={(event) => setStock(event.target.value)} /></label>}
-    <label className="inventory-active"><input type="checkbox" checked={active} onChange={(event) => setActive(event.target.checked)} /> Aktif</label>
-    <button className="approve-button" disabled={busy} type="submit">{busy ? "..." : "Simpan"}</button>
-  </form>{product.variants?.map((variant) => <VariantInventoryRow key={variant.id} variant={variant} busy={busyId === `variant-${variant.id}`} onSave={(nextStock) => onVariantUpdate(variant.id, nextStock)} />)}</>;
-}
-
-function VariantInventoryRow({ variant, busy, onSave }) {
-  const [stock, setStock] = useState(String(variant.stock));
-  useEffect(() => setStock(String(variant.stock)), [variant.stock]);
-  return <form className="inventory-row variant-inventory-row" onSubmit={(event) => { event.preventDefault(); onSave(Number(stock)); }}><div className="inventory-product"><strong>Ukuran {variant.size}</strong></div><label>Stok<input type="number" min="0" max="100000" value={stock} onChange={(event) => setStock(event.target.value)} /></label><button className="approve-button" disabled={busy} type="submit">{busy ? "..." : "Simpan"}</button></form>;
 }
 
 function Metric({ label, value, icon: Icon, tone = "" }) {

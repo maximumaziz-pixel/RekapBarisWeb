@@ -17,7 +17,7 @@ const { classifyNotification, verifyNotificationSignature } = require("./midtran
 const { hashPassword, isStrongPassword, verifyPassword } = require("./auth-password");
 const { normalizePhone, phoneLookupCandidates, whatsappRecipient } = require("./phone");
 const { getFonnteConfig, sendPasswordResetWhatsApp } = require("./whatsapp");
-const { scoringSummary } = require("./scoring");
+const { scoringHistoryForParticipant, scoringSummary } = require("./scoring");
 
 const app = express();
 const prisma = new PrismaClient();
@@ -228,13 +228,11 @@ const passwordAccountSchema = z.object({
   name: z.string().trim().min(2).max(120),
   email: z.string().trim().email().max(254).transform((email) => email.toLowerCase()),
   password: passwordSchema,
-  // Public signup must never create privileged judge accounts. Admin/Team
-  // provisioning can add this role through a separate, authorized workflow.
   role: z.enum(["PARTICIPANT", "ORGANIZER"]).default("PARTICIPANT"),
   phone: z.string().trim().min(8).max(30).refine((value) => Boolean(normalizePhone(value)), "Masukkan nomor HP yang valid."),
   institution: z.string().trim().max(120).optional(),
   eventName: z.string().trim().max(150).optional()
-}).refine((input) => input.role === "JUDGE" || input.institution, {
+}).refine((input) => Boolean(input.institution), {
   message: "Peserta dan penyelenggara harus mengisi asal satuan."
 }).refine((input) => input.role !== "ORGANIZER" || input.eventName, {
   message: "Penyelenggara harus mengisi nama event."
@@ -257,7 +255,7 @@ app.post("/api/auth/register", registrationLimiter, asyncRoute(async (req, res) 
           role: input.role,
           // Participant self-signups can continue straight into event registration; organizer accounts still require review.
           status: input.role === "PARTICIPANT" ? "ACTIVE" : "PENDING",
-          institution: input.role !== "JUDGE" ? input.institution : undefined,
+          institution: input.institution,
           eventName: input.role === "ORGANIZER" ? input.eventName : undefined
         }
       });
@@ -533,7 +531,23 @@ app.get("/api/dashboard", requireAuth, asyncRoute(async (req, res) => {
       prisma.eventRegistration.findMany({
         where: { userId: id },
         orderBy: { createdAt: "desc" },
-        include: { event: { select: { name: true, institution: true, posterUrl: true, startsAt: true } } }
+        select: {
+          id: true,
+          eventId: true,
+          participantName: true,
+          teamName: true,
+          status: true,
+          scoringTierId: true,
+          createdAt: true,
+          event: { select: {
+            name: true,
+            institution: true,
+            posterUrl: true,
+            startsAt: true,
+            scoringConfiguration: true,
+            scoringFormat: { select: { configuration: true } }
+          } }
+        }
       }),
       prisma.payment.findMany({
         where: { userId: id },
@@ -547,8 +561,57 @@ app.get("/api/dashboard", requireAuth, asyncRoute(async (req, res) => {
         }
       })
     ]);
+    const assessmentByRegistration = new Map();
+    const scoringRegistrations = registrations.filter((registration) => registration.status === "APPROVED");
+    const scoringScopes = [...new Map(scoringRegistrations.map((registration) => [
+      `${registration.eventId}:${registration.scoringTierId || ""}`,
+      registration
+    ])).values()];
+    await Promise.all(scoringScopes.map(async (registration) => {
+      try {
+        const scoringEvent = await getScoringEvent(registration.eventId, registration.scoringTierId || undefined);
+        const summary = scoringSummary(scoringEvent);
+        for (const scopedRegistration of scoringRegistrations.filter((item) =>
+          item.eventId === registration.eventId
+          && (item.scoringTierId || scoringEvent.scoringTiers[0].id) === scoringEvent.activeTier.id)) {
+          assessmentByRegistration.set(scopedRegistration.id, scoringHistoryForParticipant(
+            summary,
+            scopedRegistration.id,
+            scoringEvent.scoringConfiguration,
+            scoringEvent.activeTier
+          ));
+        }
+      } catch (error) {
+        console.error("Participant assessment history could not be loaded:", {
+          eventId: registration.eventId,
+          registrationId: registration.id,
+          message: error.message
+        });
+        for (const scopedRegistration of scoringRegistrations.filter((item) =>
+          item.eventId === registration.eventId && item.scoringTierId === registration.scoringTierId)) {
+          assessmentByRegistration.set(scopedRegistration.id, {
+            error: "Riwayat nilai belum dapat dimuat. Silakan coba lagi atau hubungi penyelenggara."
+          });
+        }
+      }
+    }));
     const adminContactPhone = process.env.ADMIN_PHONE || process.env.TEAM_PHONE || "";
-    return res.json({ role, institution, registrations, payments: payments.map((payment) => ({
+    const participantRegistrations = registrations.map((registration) => {
+      const { scoringConfiguration, scoringFormat, ...event } = registration.event;
+      const settings = (scoringConfiguration || scoringFormat?.configuration)?.settings;
+      const announcement = settings?.announcement;
+      return {
+        ...registration,
+        assessment: assessmentByRegistration.get(registration.id) || null,
+        event: {
+          ...event,
+          announcement: announcement?.enabled && (announcement.title || announcement.message)
+            ? { title: announcement.title || "Pengumuman lomba", message: announcement.message || "" }
+            : null
+        }
+      };
+    });
+    return res.json({ role, institution, registrations: participantRegistrations, payments: payments.map((payment) => ({
       ...payment,
       ...(payment.type === "MERCH" && payment.status === "SETTLED" && adminContactPhone ? { adminContactPhone } : {})
     })) });
@@ -560,14 +623,6 @@ app.get("/api/dashboard", requireAuth, asyncRoute(async (req, res) => {
       include: { schedules: { orderBy: { startsAt: "asc" } }, _count: { select: { registrations: true } } }
     });
     return res.json({ role, institution, events });
-  }
-  if (role === "JUDGE") {
-    const events = await prisma.event.findMany({
-      where: { status: "APPROVED", judgeAssignments: { some: { judgeId: id } } },
-      orderBy: [{ startsAt: "asc" }, { createdAt: "desc" }],
-      select: { id: true, name: true, institution: true, startsAt: true, endsAt: true, status: true }
-    });
-    return res.json({ role, institution, events, eventName });
   }
   throw apiError(403, "Role tidak memiliki dashboard pengguna.");
 }));
@@ -988,235 +1043,524 @@ app.post("/api/payments/midtrans/notification", asyncRoute(async (req, res) => {
 }));
 
 app.get("/api/admin/summary", requireAuth, requireStaff, asyncRoute(async (req, res) => {
-  const [users, pendingUsers, events, pendingEvents, judges, payments] = await Promise.all([
+  const [users, pendingUsers, events, pendingEvents, payments] = await Promise.all([
     prisma.user.count(),
     prisma.user.count({ where: { status: "PENDING" } }),
     prisma.event.count(),
     prisma.event.count({ where: { status: "PENDING" } }),
-    prisma.user.count({ where: { role: "JUDGE" } }),
     prisma.payment.aggregate({ where: { status: "SETTLED" }, _sum: { amount: true }, _count: true })
   ]);
-  res.json({ summary: { users, pendingUsers, events, pendingEvents, judges, settledPayments: payments._count, revenue: payments._sum.amount || 0 } });
+  res.json({ summary: { users, pendingUsers, events, pendingEvents, settledPayments: payments._count, revenue: payments._sum.amount || 0 } });
 }));
 
-const criterionSchema = z.object({
-  name: z.string().trim().min(2).max(80),
-  weight: z.number().finite().positive().max(1000).default(1),
-  minScore: z.number().finite().min(0).max(100000).default(0),
-  maxScore: z.number().finite().min(0).max(100000).default(100),
-  active: z.boolean().default(true)
-}).refine((criterion) => criterion.maxScore > criterion.minScore, { message: "Nilai maksimum harus lebih besar dari nilai minimum." });
-
-async function getScoringEvent(eventId) {
+async function getScoringEvent(eventId, requestedTierId) {
   const event = await prisma.event.findUnique({
     where: { id: eventId },
     include: {
       criteria: { orderBy: { createdAt: "asc" } },
-      registrations: { where: { status: "APPROVED" }, orderBy: { participantName: "asc" } },
-      judgeAssignments: { include: { judge: { select: { id: true, name: true, email: true, phone: true, status: true } } } },
+      scoringFormat: { select: { configuration: true } },
+      registrations: { where: { status: "APPROVED" }, orderBy: { participantName: "asc" }, include: { user: { select: { institution: true } } } },
       scores: true
     }
   });
   if (!event) throw apiError(404, "Event tidak ditemukan.");
-  return event;
+  const savedConfiguration = event.scoringConfiguration || event.scoringFormat?.configuration || null;
+  const configuredTiers = Array.isArray(savedConfiguration?.tiers) && savedConfiguration.tiers.length
+    ? savedConfiguration.tiers
+    : [{ id: "default", name: "Tingkat 1", formatId: event.scoringFormatId || null, configuration: savedConfiguration }];
+  const activeTier = configuredTiers.find((tier) => tier.id === requestedTierId) || configuredTiers[0];
+  if (!activeTier) throw apiError(409, "Event belum memiliki tingkatan penilaian.");
+  const tierConfiguration = activeTier.configuration || savedConfiguration;
+  const allRegistrations = event.registrations;
+  const tierRegistrationIds = new Set(allRegistrations
+    .filter((registration) => (registration.scoringTierId || configuredTiers[0].id) === activeTier.id)
+    .map((registration) => registration.id));
+  const tierCriteria = event.criteria.filter((criterion) => (criterion.tierId || configuredTiers[0].id) === activeTier.id);
+  return {
+    ...event,
+    criteria: tierCriteria,
+    registrations: event.registrations.filter((registration) => tierRegistrationIds.has(registration.id)),
+    scores: event.scores.filter((score) => tierRegistrationIds.has(score.registrationId) && tierCriteria.some((criterion) => criterion.id === score.criterionId)),
+    scoringConfiguration: tierConfiguration,
+    scoringTiers: configuredTiers,
+    activeTier,
+    allRegistrations
+  };
 }
 
 app.get("/api/admin/scoring/:eventId", requireAuth, requireStaff, asyncRoute(async (req, res) => {
-  const event = await getScoringEvent(req.params.eventId);
+  const event = await getScoringEvent(req.params.eventId, typeof req.query.tierId === "string" ? req.query.tierId : undefined);
+  const summary = scoringSummary(event);
   res.json({
     event: { id: event.id, name: event.name },
+    tiers: event.scoringTiers,
+    activeTier: event.activeTier,
+    participantAssignments: event.allRegistrations.map((registration) => ({
+      registrationId: registration.id,
+      participantName: registration.participantName,
+      teamName: registration.teamName,
+      tierId: registration.scoringTierId || event.scoringTiers[0].id
+    })),
     criteria: event.criteria,
-    judges: event.judgeAssignments.map((assignment) => assignment.judge),
-    participants: scoringSummary(event),
-    scoreEntries: event.scores.map(({ registrationId, criterionId, judgeId, value }) => ({ registrationId, criterionId, judgeId, value }))
+    configuration: event.scoringConfiguration,
+    judges: event.scoringConfiguration?.judges || [],
+    participants: summary.participants,
+    masterParticipants: summary.masterParticipants,
+    rankings: summary.rankings,
+    settings: summary.settings,
+    scoreEntries: event.scores.map(({ registrationId, criterionId, judgeLabel, value }) => ({ registrationId, criterionId, judgeLabel, value }))
   });
 }));
 
-app.post("/api/admin/scoring/:eventId/default-criteria", requireAuth, requireStaff, asyncRoute(async (req, res) => {
+app.post("/api/admin/scoring/:eventId/participants", requireAuth, requireStaff, asyncRoute(async (req, res) => {
   const input = parse(z.object({
-    names: z.array(z.enum(["PBB", "Danton", "Varfor", "Kostum"])).max(4).optional()
+    tierId: z.string().min(1).optional(),
+    participants: z.array(z.object({
+      participantName: z.string().trim().min(2).max(100),
+      teamName: z.string().trim().max(120).optional()
+    })).min(1).max(500)
   }), req.body);
-  const event = await prisma.event.findUnique({ where: { id: req.params.eventId }, select: { id: true } });
+  const event = await prisma.event.findUnique({ where: { id: req.params.eventId }, select: { id: true, scoringConfiguration: true } });
   if (!event) throw apiError(404, "Event tidak ditemukan.");
-  const defaults = ["PBB", "Danton", "Varfor", "Kostum"];
-  const selectedCriteria = input.names ?? defaults;
-  await prisma.$transaction(selectedCriteria.map((name) => prisma.scoringCriterion.upsert({
-    where: { eventId_name: { eventId: event.id, name } },
-    create: { eventId: event.id, name },
-    update: {}
-  })));
-  res.json({ message: "Kriteria bawaan tersedia.", criteria: await prisma.scoringCriterion.findMany({ where: { eventId: event.id }, orderBy: { createdAt: "asc" } }) });
+  const configuredTiers = Array.isArray(event.scoringConfiguration?.tiers) && event.scoringConfiguration.tiers.length
+    ? event.scoringConfiguration.tiers
+    : [{ id: "default", name: "Tingkat 1" }];
+  const tierId = input.tierId || configuredTiers[0].id;
+  if (!configuredTiers.some((tier) => tier.id === tierId)) throw apiError(400, "Tingkatan peserta tidak tersedia pada event ini.");
+  const normalizedNames = input.participants.map(({ participantName }) => participantName.toLocaleLowerCase("id-ID"));
+  if (new Set(normalizedNames).size !== normalizedNames.length) throw apiError(400, "Daftar peserta memuat nama atau nomor ganda.");
+  const registrations = await prisma.$transaction(input.participants.map((participant) => prisma.eventRegistration.create({
+    data: {
+      eventId: event.id,
+      scoringTierId: tierId,
+      participantName: participant.participantName,
+      teamName: participant.teamName || "",
+      status: "APPROVED"
+    }
+  }))).catch((error) => {
+    if (error.code === "P2002") throw apiError(409, "Nama peserta sudah terdaftar pada event ini.");
+    throw error;
+  });
+  res.status(201).json({ participants: registrations });
 }));
 
+app.post("/api/admin/scoring/:eventId/upload", requireAuth, requireStaff, asyncRoute(async (req, res) => {
+  const input = parse(z.object({
+    scores: z.array(z.object({
+      registrationId: z.string().min(1),
+      criterionId: z.string().min(1),
+      judgeLabel: z.string().trim().min(2).max(120),
+      value: z.number().int().finite()
+    })).max(5000),
+    recaps: z.array(z.object({
+      registrationId: z.string().min(1),
+      penaltyQuantities: z.record(z.number().int().min(0).max(100000)),
+      performanceTime: z.string().trim().max(5).regex(/^$|^\d{2}:[0-5]\d$/)
+    })).max(500)
+  }), req.body);
+  const event = await getScoringEvent(req.params.eventId, typeof req.query.tierId === "string" ? req.query.tierId : undefined);
+  const configuration = event.scoringConfiguration;
+  const maxPerformanceTime = configuration?.settings?.maxPerformanceTime;
+  const timeToSeconds = (value) => {
+    const match = /^(\d{2}):([0-5]\d)$/.exec(value || "");
+    return match ? Number(match[1]) * 60 + Number(match[2]) : null;
+  };
+  const maximumSeconds = timeToSeconds(maxPerformanceTime);
+  const registrations = new Set(event.registrations.map((registration) => registration.id));
+  const criteria = new Map(event.criteria.filter((criterion) => criterion.active).map((criterion) => [criterion.id, criterion]));
+  const allowedJudges = new Map((configuration?.judges || []).map((judge) => [
+    judge.label || judge.name,
+    new Set(judge.categoryIds || [])
+  ]));
+  const scoreKeys = new Set();
+  for (const score of input.scores) {
+    const criterion = criteria.get(score.criterionId);
+    if (!registrations.has(score.registrationId)) throw apiError(400, "Daftar nilai memuat peserta yang tidak aktif pada event ini.");
+    if (!criterion) throw apiError(400, "Daftar nilai memuat kriteria yang tidak aktif pada event ini.");
+    if (!allowedJudges.get(score.judgeLabel)?.has(criterion.categoryId)) throw apiError(400, "Daftar nilai memuat juri yang tidak ditugaskan pada kategori tersebut.");
+    if (score.value < criterion.minScore || score.value > criterion.maxScore) {
+      throw apiError(400, `Nilai harus berada pada rentang ${criterion.minScore} sampai ${criterion.maxScore}.`);
+    }
+    const key = `${score.registrationId}:${score.criterionId}:${score.judgeLabel}`;
+    if (scoreKeys.has(key)) throw apiError(400, "Daftar nilai memuat entri ganda.");
+    scoreKeys.add(key);
+  }
+  const penaltyIds = new Set((configuration?.penalties || []).map((penalty) => penalty.id));
+  const recapIds = new Set();
+  for (const recap of input.recaps) {
+    if (!registrations.has(recap.registrationId)) throw apiError(400, "Daftar rekap memuat peserta yang tidak aktif pada event ini.");
+    if (recapIds.has(recap.registrationId)) throw apiError(400, "Daftar rekap memuat peserta ganda.");
+    if (Object.keys(recap.penaltyQuantities).some((id) => !penaltyIds.has(id))) throw apiError(400, "Daftar rekap memuat pinalti yang tidak tersedia.");
+    const timeSeconds = timeToSeconds(recap.performanceTime);
+    if (timeSeconds !== null && maximumSeconds !== null && timeSeconds > maximumSeconds) throw apiError(400, `Waktu tampil tidak boleh melebihi ${maxPerformanceTime}.`);
+    recapIds.add(recap.registrationId);
+  }
+  const uploadOperations = [
+    ...input.scores.map((score) => prisma.competitionScore.upsert({
+        where: {
+          registrationId_criterionId_judgeLabel: {
+            registrationId: score.registrationId,
+            criterionId: score.criterionId,
+            judgeLabel: score.judgeLabel
+          }
+        },
+        create: { eventId: event.id, ...score },
+        update: { value: score.value }
+      })),
+    ...input.recaps.map((recap) => prisma.eventRegistration.update({
+        where: { id: recap.registrationId },
+        data: { scoringPenalties: recap.penaltyQuantities, scoringTime: recap.performanceTime }
+      }))
+  ];
+  await prisma.$transaction(uploadOperations);
+  res.json({ uploadedScores: input.scores.length, uploadedRecaps: input.recaps.length });
+}));
+
+const scoringSettingsSchema = z.object({
+  maxPerformanceTime: z.string().regex(/^\d{2}:[0-5]\d$/).or(z.literal("")).optional(),
+  tieBreakers: z.object({
+    overall: z.object({
+      type: z.enum(["time", "category", "group"]),
+      categoryId: z.string().optional(),
+      groupId: z.string().optional()
+    }).nullable().optional(),
+    categories: z.record(z.object({
+      type: z.enum(["time", "category", "group"]),
+      categoryId: z.string().optional(),
+      groupId: z.string().optional()
+    }).nullable()).optional()
+  }).optional(),
+  announcement: z.object({
+    enabled: z.boolean(),
+    title: z.string().max(120),
+    message: z.string().max(2000)
+  }).optional(),
+  kejuaraanApproved: z.boolean().optional()
+}).passthrough();
+
+const scoringFormatConfigurationSchema = z.object({
+  tiers: z.array(z.object({
+    id: z.string().min(1),
+    name: z.string().trim().min(1).max(80),
+    formatId: z.string().nullable().optional(),
+    configuration: z.unknown().optional()
+  })).max(3).optional(),
+  categories: z.array(z.object({
+    id: z.string().min(1),
+    name: z.string().trim().min(2).max(80),
+    items: z.array(z.string().trim().min(1).max(120)),
+    itemGroups: z.array(z.object({
+      id: z.string().min(1),
+      name: z.string().trim().min(1).max(80),
+      items: z.array(z.string().trim().min(1).max(120))
+    })).optional(),
+    rankingGroup: z.enum(["pbb", "varfor", "danton", "kostum"]).optional(),
+    maxTime: z.string().regex(/^\d{1,3}:[0-5]\d$/).optional(),
+    timePenaltyPerSecond: z.number().min(0).max(100000).optional()
+  })).min(1),
+  judges: z.array(z.object({
+    id: z.string().min(1),
+    label: z.string().trim().min(2).max(120),
+    categoryIds: z.array(z.string().min(1))
+  })),
+  penalties: z.array(z.object({
+    id: z.string().min(1),
+    name: z.string().trim().min(2).max(120),
+    value: z.number().min(0).max(100000)
+  })),
+  settings: scoringSettingsSchema.optional()
+});
+
+function validateScoringFormatConfiguration(configuration) {
+  const categoryNames = configuration.categories.map((category) => category.name.toLocaleLowerCase("id-ID"));
+  if (new Set(categoryNames).size !== categoryNames.length) throw apiError(400, "Nama kategori tidak boleh berulang.");
+  const categoryIds = new Set(configuration.categories.map((category) => category.id));
+  if (categoryIds.size !== configuration.categories.length) throw apiError(400, "ID kategori tidak boleh berulang.");
+  const labels = configuration.judges.map((judge) => judge.label.toLocaleLowerCase("id-ID"));
+  if (new Set(labels).size !== labels.length) throw apiError(400, "Label juri tidak boleh berulang.");
+  const judgeIds = configuration.judges.map((judge) => judge.id);
+  if (new Set(judgeIds).size !== judgeIds.length) throw apiError(400, "ID juri tidak boleh berulang.");
+  if (configuration.categories.some((category) => new Set(category.items.map((item) => item.toLocaleLowerCase("id-ID"))).size !== category.items.length)) {
+    throw apiError(400, "Item penilaian tidak boleh berulang di dalam kategori yang sama.");
+  }
+  if (configuration.categories.some((category) => {
+    if (!category.itemGroups) return false;
+    const groupIds = category.itemGroups.map((group) => group.id);
+    const groupNames = category.itemGroups.map((group) => group.name.toLocaleLowerCase("id-ID"));
+    const groupedItems = category.itemGroups.flatMap((group) => group.items);
+    return !category.itemGroups.length
+      || new Set(groupIds).size !== groupIds.length
+      || new Set(groupNames).size !== groupNames.length
+      || groupedItems.length !== category.items.length
+      || category.items.some((item) => groupedItems.filter((groupItem) => groupItem === item).length !== 1);
+  })) {
+    throw apiError(400, "Setiap item harus masuk tepat ke satu kelompok penilaian dengan nama kelompok unik.");
+  }
+  if (configuration.judges.some((judge) => new Set(judge.categoryIds).size !== judge.categoryIds.length
+    || judge.categoryIds.some((categoryId) => !categoryIds.has(categoryId)))) {
+    throw apiError(400, "Hak akses juri merujuk kategori yang tidak tersedia.");
+  }
+  const tieBreakers = configuration.settings?.tieBreakers;
+  const validSelection = (selection) => {
+    if (!selection || selection.type === "time") return true;
+    const category = configuration.categories.find((item) => item.id === selection.categoryId);
+    if (!category) return false;
+    return selection.type !== "group" || category.itemGroups?.some((group) => group.id === selection.groupId);
+  };
+  if (!validSelection(tieBreakers?.overall)
+    || Object.values(tieBreakers?.categories || {}).some((selection) => !validSelection(selection))) {
+    throw apiError(400, "Nilai pembanding merujuk kategori atau bagian yang tidak tersedia.");
+  }
+}
+
 app.get("/api/admin/scoring-formats", requireAuth, requireStaff, asyncRoute(async (req, res) => {
-  const formats = await prisma.scoringFormat.findMany({ orderBy: { updatedAt: "desc" }, include: { criteria: { orderBy: { createdAt: "asc" } }, judges: { include: { judge: { select: { id: true, name: true, email: true } } } } } });
+  const formats = await prisma.scoringFormat.findMany({ orderBy: { updatedAt: "desc" } });
   res.json({ formats });
 }));
 
-app.post("/api/admin/scoring-formats/from-event", requireAuth, requireStaff, asyncRoute(async (req, res) => {
-  const input = parse(z.object({ eventId: z.string().min(1), name: z.string().trim().min(2).max(100) }), req.body);
-  const event = await prisma.event.findUnique({ where: { id: input.eventId }, include: { criteria: { orderBy: { createdAt: "asc" } }, judgeAssignments: true } });
-  if (!event) throw apiError(404, "Event tidak ditemukan.");
-  if (!event.criteria.length) throw apiError(400, "Tambahkan kriteria ke event sebelum menyimpan format.");
-  const format = await prisma.scoringFormat.create({ data: { name: input.name, createdById: req.user.id, criteria: { create: event.criteria.map(({ name, weight, minScore, maxScore, active }) => ({ name, weight, minScore, maxScore, active })) }, judges: { create: event.judgeAssignments.map(({ judgeId }) => ({ judgeId })) } }, include: { criteria: true, judges: true } });
+app.post("/api/admin/scoring-formats", requireAuth, requireStaff, asyncRoute(async (req, res) => {
+  const input = parse(z.object({
+    name: z.string().trim().min(2).max(100),
+    configuration: scoringFormatConfigurationSchema
+  }), req.body);
+  validateScoringFormatConfiguration(input.configuration);
+  const format = await prisma.scoringFormat.create({
+    data: {
+      name: input.name,
+      configuration: input.configuration,
+      createdById: req.user.id
+    }
+  });
   res.status(201).json({ format });
 }));
 
+app.put("/api/admin/scoring-formats/:formatId", requireAuth, requireStaff, asyncRoute(async (req, res) => {
+  const input = parse(z.object({
+    name: z.string().trim().min(2).max(100),
+    configuration: scoringFormatConfigurationSchema
+  }), req.body);
+  validateScoringFormatConfiguration(input.configuration);
+  const format = await prisma.scoringFormat.update({
+    where: { id: req.params.formatId },
+    data: { name: input.name, configuration: input.configuration }
+  }).catch((error) => {
+    if (error.code === "P2025") throw apiError(404, "Format penilaian tidak ditemukan.");
+    throw error;
+  });
+  res.json({ format });
+}));
+
+app.delete("/api/admin/scoring-formats/:formatId", requireAuth, requireStaff, asyncRoute(async (req, res) => {
+  const format = await prisma.scoringFormat.findUnique({ where: { id: req.params.formatId }, select: { id: true } });
+  if (!format) throw apiError(404, "Format penilaian tidak ditemukan.");
+  const linkedEvent = await prisma.event.findFirst({
+    where: {
+      OR: [
+        { scoringFormatId: format.id },
+        { scoringConfiguration: { path: ["tiers"], array_contains: [{ formatId: format.id }] } }
+      ]
+    },
+    select: { id: true }
+  });
+  if (linkedEvent) throw apiError(409, "Format sedang digunakan oleh event. Lepaskan format dari tingkatan event terlebih dahulu.");
+  await prisma.scoringFormat.delete({ where: { id: format.id } });
+  res.status(204).end();
+}));
+
+app.patch("/api/admin/scoring/:eventId/tiers", requireAuth, requireStaff, asyncRoute(async (req, res) => {
+  const input = parse(z.object({
+    tiers: z.array(z.object({ id: z.string().trim().min(1).max(80), name: z.string().trim().min(1).max(80) })).min(1).max(3)
+  }), req.body);
+  if (new Set(input.tiers.map((tier) => tier.id)).size !== input.tiers.length
+    || new Set(input.tiers.map((tier) => tier.name.toLocaleLowerCase("id-ID"))).size !== input.tiers.length) {
+    throw apiError(400, "ID dan nama tingkatan harus unik.");
+  }
+  const event = await prisma.event.findUnique({
+    where: { id: req.params.eventId },
+    include: { registrations: { select: { id: true, scoringTierId: true, scores: { select: { id: true } } } } }
+  });
+  if (!event) throw apiError(404, "Event tidak ditemukan.");
+  const currentConfiguration = event.scoringConfiguration || event.scoringFormat?.configuration || {};
+  const currentTiers = Array.isArray(currentConfiguration.tiers) && currentConfiguration.tiers.length
+    ? currentConfiguration.tiers
+    : [{ id: "default", name: "Tingkat 1", formatId: event.scoringFormatId || null, configuration: currentConfiguration }];
+  const nextIds = new Set(input.tiers.map((tier) => tier.id));
+  const removedIds = currentTiers.filter((tier) => !nextIds.has(tier.id)).map((tier) => tier.id);
+  const hasDataInRemovedTier = event.registrations.some((registration) =>
+    removedIds.includes(registration.scoringTierId || currentTiers[0].id) && registration.scores.length > 0);
+  const hasAssignedParticipant = event.registrations.some((registration) =>
+    removedIds.includes(registration.scoringTierId || currentTiers[0].id));
+  if (hasDataInRemovedTier || hasAssignedParticipant) {
+    throw apiError(409, "Tingkatan tidak dapat dihapus selama masih memiliki peserta atau nilai. Pindahkan peserta terlebih dahulu.");
+  }
+  const tiers = input.tiers.map((tier) => ({
+    ...currentTiers.find((existing) => existing.id === tier.id),
+    ...tier
+  }));
+  const nextConfiguration = {
+    ...currentConfiguration,
+    tiers,
+    categories: currentConfiguration.categories || [],
+    judges: currentConfiguration.judges || [],
+    penalties: currentConfiguration.penalties || []
+  };
+  await prisma.event.update({ where: { id: event.id }, data: { scoringConfiguration: nextConfiguration } });
+  res.json({ tiers });
+}));
+
+app.patch("/api/admin/scoring/:eventId/participants/:registrationId/tier", requireAuth, requireStaff, asyncRoute(async (req, res) => {
+  const input = parse(z.object({ tierId: z.string().min(1) }), req.body);
+  const event = await prisma.event.findUnique({ where: { id: req.params.eventId }, select: { id: true, scoringConfiguration: true } });
+  if (!event) throw apiError(404, "Event tidak ditemukan.");
+  const tiers = Array.isArray(event.scoringConfiguration?.tiers) && event.scoringConfiguration.tiers.length
+    ? event.scoringConfiguration.tiers
+    : [{ id: "default", name: "Tingkat 1" }];
+  if (!tiers.some((tier) => tier.id === input.tierId)) throw apiError(400, "Tingkatan tidak tersedia pada event ini.");
+  const registration = await prisma.eventRegistration.findFirst({
+    where: { id: req.params.registrationId, eventId: event.id, status: "APPROVED" },
+    include: { scores: { select: { criterion: { select: { tierId: true } } } } }
+  });
+  if (!registration) throw apiError(404, "Peserta tidak ditemukan pada event ini.");
+  if (registration.scores.some((score) => score.criterion.tierId !== input.tierId)) {
+    throw apiError(409, "Peserta sudah memiliki nilai pada tingkatan berbeda dan tidak dapat dipindahkan.");
+  }
+  const updated = await prisma.eventRegistration.update({ where: { id: registration.id }, data: { scoringTierId: input.tierId } });
+  res.json({ registration: updated });
+}));
+
 app.post("/api/admin/scoring-formats/apply", requireAuth, requireStaff, asyncRoute(async (req, res) => {
-  const input = parse(z.object({ eventId: z.string().min(1), formatId: z.string().min(1) }), req.body);
+  const input = parse(z.object({ eventId: z.string().min(1), formatId: z.string().min(1), tierId: z.string().min(1).optional() }), req.body);
   const [event, format] = await Promise.all([
-    prisma.event.findUnique({ where: { id: input.eventId }, include: { criteria: true } }),
-    prisma.scoringFormat.findUnique({ where: { id: input.formatId }, include: { criteria: { orderBy: { createdAt: "asc" } }, judges: true } })
+    prisma.event.findUnique({ where: { id: input.eventId }, select: { id: true, scoringFormatId: true, scoringConfiguration: true } }),
+    prisma.scoringFormat.findUnique({ where: { id: input.formatId } })
   ]);
   if (!event || !format) throw apiError(404, "Event atau format penilaian tidak ditemukan.");
-  if (await prisma.competitionScore.count({ where: { eventId: event.id } })) throw apiError(409, "Format tidak dapat diterapkan setelah event memiliki nilai. Buat format baru untuk event lain.");
-  await prisma.$transaction(async (tx) => {
-    await tx.scoringCriterion.deleteMany({ where: { eventId: event.id } });
-    await tx.scoringCriterion.createMany({ data: format.criteria.map(({ name, weight, minScore, maxScore, active }) => ({ eventId: event.id, name, weight, minScore, maxScore, active })) });
-    await tx.judgeAssignment.deleteMany({ where: { eventId: event.id } });
-    if (format.judges.length) await tx.judgeAssignment.createMany({ data: format.judges.map(({ judgeId }) => ({ eventId: event.id, judgeId })) });
-    await tx.event.update({ where: { id: event.id }, data: { scoringFormatId: format.id, scoringFormatAppliedAt: new Date() } });
-  });
-  res.json({ message: "Format disalin ke konfigurasi event. Perubahan pada format utama tidak mengubah salinan ini.", eventId: event.id, formatId: format.id });
-}));
-
-app.get("/api/judge/events/:eventId/scoring", requireAuth, asyncRoute(async (req, res) => {
-  if (req.user.role !== "JUDGE") throw apiError(403, "Fitur ini khusus juri.");
-  const assignment = await prisma.judgeAssignment.findUnique({ where: { eventId_judgeId: { eventId: req.params.eventId, judgeId: req.user.id } } });
-  if (!assignment) throw apiError(403, "Anda tidak ditugaskan untuk menilai event ini.");
-  const event = await prisma.event.findFirst({
-    where: { id: req.params.eventId, status: "APPROVED" },
-    include: { criteria: { where: { active: true }, orderBy: { createdAt: "asc" } }, registrations: { where: { status: "APPROVED" }, orderBy: { participantName: "asc" } }, scores: { where: { judgeId: req.user.id } } }
-  });
-  if (!event) throw apiError(404, "Event tidak tersedia.");
-  res.json({ event: { id: event.id, name: event.name }, criteria: event.criteria, participants: event.registrations, scores: event.scores });
-}));
-
-app.post("/api/admin/scoring/:eventId/criteria", requireAuth, requireStaff, asyncRoute(async (req, res) => {
-  const input = parse(criterionSchema, req.body);
-  const criterion = await prisma.scoringCriterion.create({ data: { ...input, eventId: req.params.eventId } }).catch((error) => {
-    if (error.code === "P2002") throw apiError(409, "Nama kriteria tersebut sudah digunakan pada event ini.");
-    if (error.code === "P2003") throw apiError(404, "Event tidak ditemukan.");
-    throw error;
-  });
-  res.status(201).json({ criterion });
-}));
-
-app.patch("/api/admin/scoring/:eventId/criteria/:criterionId", requireAuth, requireStaff, asyncRoute(async (req, res) => {
-  const input = parse(criterionSchema.innerType().partial().extend({ confirmRecalculation: z.boolean().optional() }), req.body);
-  const existing = await prisma.scoringCriterion.findFirst({ where: { id: req.params.criterionId, eventId: req.params.eventId } });
-  if (!existing) throw apiError(404, "Kriteria tidak ditemukan pada event ini.");
-  const next = { ...existing, ...input };
-  if (next.maxScore <= next.minScore) throw apiError(400, "Nilai maksimum harus lebih besar dari nilai minimum.");
-  const hasScores = await prisma.competitionScore.count({ where: { criterionId: existing.id } });
-  const changesScoringRule = input.name !== undefined || input.weight !== undefined || input.minScore !== undefined || input.maxScore !== undefined;
-  if (hasScores && changesScoringRule) throw apiError(409, "Nama, bobot, dan rentang kriteria tidak dapat diubah setelah nilai masuk. Tambahkan kriteria baru untuk perubahan tersebut.");
-  if (hasScores && input.active !== undefined && !input.confirmRecalculation) throw apiError(409, "Perubahan status akan menghitung ulang ranking. Konfirmasi perubahan ini terlebih dahulu.");
-  const updateData = { ...input };
-  delete updateData.confirmRecalculation;
-  const criterion = await prisma.scoringCriterion.update({ where: { id: existing.id }, data: updateData }).catch((error) => {
-    if (error.code === "P2002") throw apiError(409, "Nama kriteria tersebut sudah digunakan pada event ini.");
-    throw error;
-  });
-  res.json({ criterion });
-}));
-
-app.delete("/api/admin/scoring/:eventId/criteria/:criterionId", requireAuth, requireStaff, asyncRoute(async (req, res) => {
-  const criterion = await prisma.scoringCriterion.findFirst({ where: { id: req.params.criterionId, eventId: req.params.eventId } });
-  if (!criterion) throw apiError(404, "Kriteria tidak ditemukan pada event ini.");
-  if (await prisma.competitionScore.count({ where: { criterionId: criterion.id } })) throw apiError(409, "Kriteria yang sudah memiliki nilai tidak dapat dihapus. Nonaktifkan kriteria tersebut.");
-  await prisma.scoringCriterion.delete({ where: { id: criterion.id } });
-  res.status(204).end();
-}));
-
-app.post("/api/admin/scoring/:eventId/judges", requireAuth, requireStaff, asyncRoute(async (req, res) => {
-  const input = parse(z.object({ judgeId: z.string().min(1) }), req.body);
-  const judge = await prisma.user.findFirst({ where: { id: input.judgeId, role: "JUDGE", status: "ACTIVE" }, select: { id: true } });
-  if (!judge) throw apiError(404, "Akun juri aktif tidak ditemukan.");
-  const assignment = await prisma.judgeAssignment.create({ data: { eventId: req.params.eventId, judgeId: judge.id } }).catch((error) => {
-    if (error.code === "P2002") throw apiError(409, "Juri tersebut sudah ditugaskan pada event ini.");
-    if (error.code === "P2003") throw apiError(404, "Event tidak ditemukan.");
-    throw error;
-  });
-  res.status(201).json({ assignment });
-}));
-
-app.delete("/api/admin/scoring/:eventId/judges/:judgeId", requireAuth, requireStaff, asyncRoute(async (req, res) => {
-  const assignment = await prisma.judgeAssignment.findUnique({ where: { eventId_judgeId: { eventId: req.params.eventId, judgeId: req.params.judgeId } } });
-  if (!assignment) throw apiError(404, "Penugasan juri tidak ditemukan.");
-  await prisma.judgeAssignment.delete({ where: { id: assignment.id } });
-  res.status(204).end();
-}));
-
-app.post("/api/admin/judges", requireAuth, requireStaff, asyncRoute(async (req, res) => {
-  const input = parse(z.object({
-    name: z.string().trim().min(2).max(120),
-    email: z.string().trim().email().max(254).transform((value) => value.toLowerCase()),
-    phone: z.string().trim().min(8).max(30).refine((value) => Boolean(normalizePhone(value)), "Masukkan nomor HP yang valid.")
-  }), req.body);
-  const inaccessiblePassword = crypto.randomBytes(32).toString("base64url");
-  try {
-    const judge = await prisma.user.create({
-      data: {
-        name: input.name,
-        email: input.email,
-        phone: normalizePhone(input.phone),
-        role: "JUDGE",
-        status: "PENDING",
-        passwordHash: await hashPassword(inaccessiblePassword)
-      },
-      select: { id: true, name: true, email: true, phone: true, role: true, status: true }
-    });
-    res.status(201).json({ judge, message: "Akun juri dibuat dalam status menunggu persetujuan. Setelah diaktifkan, juri dapat mengatur password melalui alur lupa password WhatsApp." });
-  } catch (error) {
-    if (error.code === "P2002") throw apiError(409, "Email atau nomor HP sudah digunakan akun lain.");
-    throw error;
+  const currentConfiguration = event.scoringConfiguration || format.configuration;
+  const tiers = Array.isArray(currentConfiguration.tiers) && currentConfiguration.tiers.length
+    ? currentConfiguration.tiers
+    : [{ id: "default", name: "Tingkat 1", formatId: event.scoringFormatId || null, configuration: currentConfiguration }];
+  const tierId = input.tierId || tiers[0].id;
+  const tier = tiers.find((item) => item.id === tierId);
+  if (!tier) throw apiError(400, "Tingkatan tidak tersedia pada event ini.");
+  if (await prisma.competitionScore.count({ where: { eventId: event.id, criterion: { tierId } } })) {
+    throw apiError(409, "Format tingkatan tidak dapat diganti setelah ada nilai. Buat tingkatan baru atau hapus nilai terlebih dahulu.");
   }
+  const configuration = format.configuration;
+  const criteria = configuration.categories.flatMap((category) => category.items.map((name) => ({
+    eventId: event.id,
+    tierId,
+    categoryId: category.id,
+    categoryName: category.name,
+    name,
+    weight: 1,
+    minScore: 0,
+    maxScore: 100,
+    active: true
+  })));
+  await prisma.$transaction(async (tx) => {
+    await tx.scoringCriterion.deleteMany({ where: { eventId: event.id, tierId } });
+    if (criteria.length) await tx.scoringCriterion.createMany({ data: criteria });
+    await tx.event.update({
+      where: { id: event.id },
+      data: {
+        scoringFormatId: event.scoringFormatId || format.id,
+        scoringFormatAppliedAt: new Date(),
+        scoringConfiguration: {
+          ...configuration,
+          tiers: tiers.map((item) => item.id === tierId ? { ...item, formatId: format.id, configuration } : item)
+        }
+      }
+    });
+  });
+  res.json({ message: "Format diterapkan ke tingkatan event.", eventId: event.id, formatId: format.id, tierId });
 }));
 
-app.patch("/api/admin/judges/:id", requireAuth, requireStaff, asyncRoute(async (req, res) => {
-  const input = parse(z.object({
-    name: z.string().trim().min(2).max(120),
-    email: z.string().trim().email().max(254).transform((value) => value.toLowerCase()),
-    phone: z.string().trim().min(8).max(30).refine((value) => Boolean(normalizePhone(value)), "Masukkan nomor HP yang valid.")
-  }), req.body);
-  const judge = await prisma.user.findFirst({ where: { id: req.params.id, role: "JUDGE" }, select: { id: true } });
-  if (!judge) throw apiError(404, "Akun juri tidak ditemukan.");
-  const updated = await prisma.user.update({ where: { id: judge.id }, data: { name: input.name, email: input.email, phone: normalizePhone(input.phone) }, select: { id: true, name: true, email: true, phone: true, role: true, status: true } }).catch((error) => {
-    if (error.code === "P2002") throw apiError(409, "Email atau nomor HP sudah digunakan akun lain.");
-    throw error;
-  });
-  res.json({ judge: updated });
+app.patch("/api/admin/scoring/:eventId/settings", requireAuth, requireStaff, asyncRoute(async (req, res) => {
+  const input = parse(z.object({ tierId: z.string().min(1).optional(), settings: scoringSettingsSchema }), req.body);
+  const event = await getScoringEvent(req.params.eventId, input.tierId);
+  const currentConfiguration = event.scoringConfiguration;
+  if (!currentConfiguration) throw apiError(409, "Terapkan format penilaian terlebih dahulu.");
+  const settings = { ...(currentConfiguration.settings || {}), ...input.settings };
+  if (settings.maxPerformanceTime && !/^\d{2}:[0-5]\d$/.test(settings.maxPerformanceTime)) {
+    throw apiError(400, "Waktu maksimal harus menggunakan format MM:SS.");
+  }
+  if (settings.maxPerformanceTime) {
+    const [maxMinutes, maxSeconds] = settings.maxPerformanceTime.split(":").map(Number);
+    const maximumSeconds = maxMinutes * 60 + maxSeconds;
+    const existingTimeOverLimit = event.registrations.some((registration) => {
+      const match = /^(\d{2}):([0-5]\d)$/.exec(registration.scoringTime || "");
+      return match && Number(match[1]) * 60 + Number(match[2]) > maximumSeconds;
+    });
+    if (existingTimeOverLimit) throw apiError(409, "Waktu maksimal tidak dapat lebih rendah dari waktu tampil yang sudah tersimpan.");
+  }
+  const configuration = { ...currentConfiguration, settings };
+  const tiers = event.scoringTiers.map((tier) => tier.id === event.activeTier.id ? { ...tier, configuration } : tier);
+  const updatedConfiguration = { ...currentConfiguration, settings, tiers };
+  await prisma.event.update({ where: { id: event.id }, data: { scoringConfiguration: updatedConfiguration } });
+  res.json({ settings });
 }));
 
 app.post("/api/events/:eventId/scores", requireAuth, asyncRoute(async (req, res) => {
-  const input = parse(z.object({ registrationId: z.string().min(1), criterionId: z.string().min(1), value: z.number().finite(), judgeId: z.string().min(1).optional() }), req.body);
-  const canManageScoring = ["ADMIN", "TEAM"].includes(req.user.role);
-  // Staff entries retain the assigned judge as scorer so ranking stays consistent across dashboard and judge input.
-  const judgeId = req.user.role === "JUDGE" ? req.user.id : canManageScoring ? input.judgeId : null;
-  if (!judgeId) throw apiError(403, "Pilih juri yang ditugaskan sebelum mencatat nilai.");
-  const assignment = await prisma.judgeAssignment.findFirst({
-    where: { eventId: req.params.eventId, judgeId, judge: { is: { role: "JUDGE", status: "ACTIVE" } } }
-  });
-  if (!assignment) throw apiError(403, "Juri tersebut tidak aktif atau tidak ditugaskan untuk menilai event ini.");
-  const [registration, criterion] = await Promise.all([
+  if (!["ADMIN", "TEAM"].includes(req.user.role)) throw apiError(403, "Hanya Admin atau Tim Rekap yang dapat mencatat nilai.");
+  const input = parse(z.object({ registrationId: z.string().min(1), criterionId: z.string().min(1), value: z.number().int().finite(), judgeLabel: z.string().trim().min(2).max(120) }), req.body);
+  const [registration, criterion, event] = await Promise.all([
     prisma.eventRegistration.findFirst({ where: { id: input.registrationId, eventId: req.params.eventId, status: "APPROVED" }, select: { id: true } }),
-    prisma.scoringCriterion.findFirst({ where: { id: input.criterionId, eventId: req.params.eventId, active: true } })
+    prisma.scoringCriterion.findFirst({ where: { id: input.criterionId, eventId: req.params.eventId, active: true } }),
+    prisma.event.findUnique({ where: { id: req.params.eventId }, select: { scoringConfiguration: true, scoringFormat: { select: { configuration: true } } } })
   ]);
   if (!registration) throw apiError(404, "Peserta tidak terdaftar atau belum disetujui pada event ini.");
   if (!criterion) throw apiError(404, "Kriteria aktif tidak ditemukan pada event ini.");
+  if (!event) throw apiError(404, "Event tidak ditemukan.");
+  const configuration = event.scoringConfiguration || event.scoringFormat?.configuration;
+  const judge = configuration?.judges?.find((item) => (item.label || item.name) === input.judgeLabel);
+  if (!judge) throw apiError(403, "Label juri tidak tersedia pada konfigurasi penilaian event ini.");
+  if (!judge.categoryIds?.includes(criterion.categoryId)) throw apiError(403, "Juri tidak memiliki hak akses untuk menilai kategori ini.");
   if (input.value < criterion.minScore || input.value > criterion.maxScore) throw apiError(400, `Nilai harus berada pada rentang ${criterion.minScore} sampai ${criterion.maxScore}.`);
   const score = await prisma.competitionScore.upsert({
-    where: { registrationId_criterionId_judgeId: { registrationId: registration.id, criterionId: criterion.id, judgeId } },
-    create: { eventId: req.params.eventId, registrationId: registration.id, criterionId: criterion.id, judgeId, value: input.value },
+    where: { registrationId_criterionId_judgeLabel: { registrationId: registration.id, criterionId: criterion.id, judgeLabel: input.judgeLabel } },
+    create: { eventId: req.params.eventId, registrationId: registration.id, criterionId: criterion.id, judgeLabel: input.judgeLabel, value: input.value },
     update: { value: input.value }
   });
   res.json({ score });
 }));
 
+app.put("/api/admin/scoring/:eventId/participants/:registrationId/recap", requireAuth, requireStaff, asyncRoute(async (req, res) => {
+  const input = parse(z.object({
+    penaltyQuantities: z.record(z.number().int().min(0).max(100000)),
+    performanceTime: z.string().trim().max(5).regex(/^$|^\d{2}:[0-5]\d$/)
+  }), req.body);
+  const [event, registration] = await Promise.all([
+    prisma.event.findUnique({ where: { id: req.params.eventId }, select: { scoringConfiguration: true, scoringFormat: { select: { configuration: true } } } }),
+    prisma.eventRegistration.findFirst({ where: { id: req.params.registrationId, eventId: req.params.eventId, status: "APPROVED" }, select: { id: true } })
+  ]);
+  if (!event) throw apiError(404, "Event tidak ditemukan.");
+  if (!registration) throw apiError(404, "Peserta tidak terdaftar atau belum disetujui pada event ini.");
+  const configuration = event.scoringConfiguration || event.scoringFormat?.configuration;
+  const maximumTime = configuration?.settings?.maxPerformanceTime;
+  const maximumMatch = /^(\d{2}):([0-5]\d)$/.exec(maximumTime || "");
+  const timeMatch = /^(\d{2}):([0-5]\d)$/.exec(input.performanceTime);
+  if (input.performanceTime && !timeMatch) throw apiError(400, "Waktu tampil harus menggunakan format MM:SS.");
+  if (timeMatch && maximumMatch) {
+    const timeSeconds = Number(timeMatch[1]) * 60 + Number(timeMatch[2]);
+    const maximumSeconds = Number(maximumMatch[1]) * 60 + Number(maximumMatch[2]);
+    if (timeSeconds > maximumSeconds) throw apiError(400, `Waktu tampil tidak boleh melebihi ${maximumTime}.`);
+  }
+  const availableIds = new Set((configuration?.penalties || []).map((penalty) => penalty.id));
+  if (Object.keys(input.penaltyQuantities).some((id) => !availableIds.has(id))) {
+    throw apiError(400, "Daftar pinalti berisi pilihan yang tidak valid.");
+  }
+  const updated = await prisma.eventRegistration.update({
+    where: { id: registration.id },
+    data: { scoringPenalties: input.penaltyQuantities, scoringTime: input.performanceTime },
+    select: { id: true, scoringPenalties: true, scoringTime: true }
+  });
+  res.json({ penalties: updated.scoringPenalties, performanceTime: updated.scoringTime });
+}));
+
 app.get("/api/admin/scoring/:eventId/ranking", requireAuth, requireStaff, asyncRoute(async (req, res) => {
   const event = await getScoringEvent(req.params.eventId);
-  res.json({ event: { id: event.id, name: event.name }, method: "Rata-rata per kriteria antar juri, lalu jumlah nilai rata-rata dikalikan bobot; peserta belum lengkap tidak diberi peringkat, nilai seri berbagi peringkat.", participants: scoringSummary(event) });
+  const summary = scoringSummary(event);
+  res.json({ event: { id: event.id, name: event.name }, method: "Jumlah nilai label juri yang ditugaskan per item, dikalikan bobot dan dikurangi penalti untuk klasemen akhir.", participants: summary.participants, rankings: summary.rankings, settings: summary.settings });
 }));
 
 app.get("/api/admin/users", requireAuth, requireStaff, asyncRoute(async (req, res) => {
@@ -1265,7 +1609,16 @@ app.get("/api/admin/events/:id/participants", requireAuth, requireStaff, asyncRo
   const registrations = await prisma.eventRegistration.findMany({
     where: { eventId: req.params.id },
     orderBy: { createdAt: "desc" },
-    include: { user: { select: { email: true, phone: true } } }
+    select: {
+      id: true,
+      eventId: true,
+      userId: true,
+      participantName: true,
+      teamName: true,
+      status: true,
+      createdAt: true,
+      user: { select: { email: true, phone: true } }
+    }
   });
   res.json({ registrations });
 }));
@@ -1353,6 +1706,15 @@ app.get("*", (req, res, next) => {
   res.sendFile(path.join(distPath, "index.html"), (error) => {
     if (error) next(error);
   });
+  settings: z.object({
+    maxPerformanceTime: z.string().regex(/^\d{2}:[0-5]\d$/).optional().or(z.literal("")),
+    tieBreakers: z.object({
+      overall: z.object({ type: z.enum(["time", "category", "group"]), categoryId: z.string().optional(), groupId: z.string().optional() }).nullable().optional(),
+      categories: z.record(z.object({ type: z.enum(["time", "category", "group"]), categoryId: z.string().optional(), groupId: z.string().optional() }).nullable()).optional()
+    }).optional(),
+    announcement: z.object({ enabled: z.boolean(), title: z.string().max(120), message: z.string().max(2000) }).optional(),
+    kejuaraanApproved: z.boolean().optional()
+  }).passthrough().optional()
 });
 
 app.use((error, req, res, next) => {

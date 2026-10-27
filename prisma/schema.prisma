@@ -11,7 +11,6 @@ enum UserRole {
   ADMIN
   TEAM
   ORGANIZER
-  JUDGE
   PARTICIPANT
 }
 
@@ -74,9 +73,6 @@ model User {
   organizedEvents    Event[]               @relation("EventOrganizer")
   registrations      EventRegistration[]
   payments           Payment[]
-  judgeAssignments   JudgeAssignment[]
-  scores             CompetitionScore[]
-  scoringFormatAssignments ScoringFormatJudge[]
   createdScoringFormats ScoringFormat[]
 
   @@index([status, role])
@@ -103,11 +99,11 @@ model Event {
   tickets            Ticket[]
   schedules          EventSchedule[]
   criteria           ScoringCriterion[]
-  judgeAssignments   JudgeAssignment[]
   scores             CompetitionScore[]
   scoringFormatId    String?
   scoringFormat      ScoringFormat?    @relation(fields: [scoringFormatId], references: [id], onDelete: SetNull)
   scoringFormatAppliedAt DateTime?
+  scoringConfiguration Json?
 
   @@index([status, startsAt])
   @@index([organizerId])
@@ -122,6 +118,9 @@ model EventRegistration {
   participantName    String
   teamName           String             @default("")
   status             RegistrationStatus @default(PENDING)
+  scoringPenalties   Json                @default("{}")
+  scoringTime        String              @default("")
+  scoringTierId      String?
   createdAt          DateTime           @default(now())
   payments           Payment[]
   scores             CompetitionScore[]
@@ -149,6 +148,9 @@ model ScoringCriterion {
   id        String   @id @default(cuid())
   eventId   String
   event     Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  tierId    String   @default("")
+  categoryId String  @default("")
+  categoryName String @default("")
   name      String
   weight    Float    @default(1)
   minScore  Float    @default(0)
@@ -158,59 +160,19 @@ model ScoringCriterion {
   updatedAt DateTime @updatedAt
   scores    CompetitionScore[]
 
-  @@unique([eventId, name])
-  @@index([eventId, active])
+  @@unique([eventId, tierId, categoryId, name])
+  @@index([eventId, tierId, active])
 }
 
 model ScoringFormat {
   id        String                  @id @default(cuid())
   name      String
+  configuration Json
   createdById String
   createdBy User                    @relation(fields: [createdById], references: [id], onDelete: Restrict)
   createdAt DateTime                @default(now())
   updatedAt DateTime                @updatedAt
-  criteria  ScoringFormatCriterion[]
-  judges    ScoringFormatJudge[]
   events    Event[]
-}
-
-model ScoringFormatCriterion {
-  id        String        @id @default(cuid())
-  formatId  String
-  format    ScoringFormat @relation(fields: [formatId], references: [id], onDelete: Cascade)
-  name      String
-  weight    Float         @default(1)
-  minScore  Float         @default(0)
-  maxScore  Float         @default(100)
-  active    Boolean       @default(true)
-  createdAt DateTime      @default(now())
-
-  @@unique([formatId, name])
-  @@index([formatId])
-}
-
-model ScoringFormatJudge {
-  id        String        @id @default(cuid())
-  formatId  String
-  format    ScoringFormat @relation(fields: [formatId], references: [id], onDelete: Cascade)
-  judgeId   String
-  judge     User          @relation(fields: [judgeId], references: [id], onDelete: Cascade)
-  createdAt DateTime      @default(now())
-
-  @@unique([formatId, judgeId])
-  @@index([judgeId, formatId])
-}
-
-model JudgeAssignment {
-  id        String   @id @default(cuid())
-  eventId   String
-  event     Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  judgeId   String
-  judge     User     @relation(fields: [judgeId], references: [id], onDelete: Cascade)
-  createdAt DateTime @default(now())
-
-  @@unique([eventId, judgeId])
-  @@index([judgeId, eventId])
 }
 
 model CompetitionScore {
@@ -221,13 +183,12 @@ model CompetitionScore {
   registration   EventRegistration @relation(fields: [registrationId], references: [id], onDelete: Cascade)
   criterionId    String
   criterion      ScoringCriterion @relation(fields: [criterionId], references: [id], onDelete: Restrict)
-  judgeId        String
-  judge          User             @relation(fields: [judgeId], references: [id], onDelete: Restrict)
+  judgeLabel     String
   value          Float
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
 
-  @@unique([registrationId, criterionId, judgeId])
+  @@unique([registrationId, criterionId, judgeLabel])
   @@index([eventId, registrationId])
   @@index([eventId, criterionId])
 }

@@ -115,7 +115,7 @@ export default function AuthModal({ mode, setMode, close, error, resetToken, eve
             <label className="auth-field">Nama lengkap<input autoComplete="name" maxLength="120" minLength="2" onChange={(event) => setName(event.target.value)} required value={name} /></label>
             <label className="auth-field">Nomor HP<input autoComplete="tel" maxLength="30" onChange={(event) => setPhone(event.target.value)} pattern="[+0-9 ()-]{8,30}" required title="Gunakan 8–15 digit nomor telepon." type="tel" value={phone} /></label>
             <small className="field-caption">Gunakan nomor WhatsApp aktif; format internasional disarankan, contoh +62812...</small>
-            {role !== "JUDGE" && <label className="auth-field">Asal satuan<input autoComplete="organization" maxLength="120" onChange={(event) => setInstitution(event.target.value)} required value={institution} /></label>}
+            <label className="auth-field">Asal satuan<input autoComplete="organization" maxLength="120" onChange={(event) => setInstitution(event.target.value)} required value={institution} /></label>
             {role === "ORGANIZER" && <label className="auth-field">Nama event<input maxLength="150" onChange={(event) => setEventName(event.target.value)} required value={eventName} /></label>}
           </>}
           {(mode === "login" || mode === "register") && <label className="auth-field">
