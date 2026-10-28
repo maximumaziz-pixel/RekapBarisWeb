@@ -51,6 +51,7 @@ export default function AuthModal({ mode, setMode, close, error, resetToken, eve
         : mode === "reset-password"
           ? { token: resetToken, password }
           : {
+            ...(mode === "login" ? { role } : {}),
             ...(mode === "register" ? {
           name: name.trim(),
           role,
@@ -118,6 +119,8 @@ export default function AuthModal({ mode, setMode, close, error, resetToken, eve
             <label className="auth-field">Asal satuan<input autoComplete="organization" maxLength="120" onChange={(event) => setInstitution(event.target.value)} required value={institution} /></label>
             {role === "ORGANIZER" && <label className="auth-field">Nama event<input maxLength="150" onChange={(event) => setEventName(event.target.value)} required value={eventName} /></label>}
           </>}
+          {mode === "login" && !email.includes("@") && <div className="role-picker"><span>Masuk sebagai</span><div>{roles.map(({ id, label, icon: Icon }) => <button type="button" onClick={() => setRole(id)} className={role === id ? "is-active" : ""} key={id}><Icon size={17} />{label}</button>)}</div></div>}
+          {mode === "login" && email.includes("@") && <div className="role-picker"><span>Masuk sebagai</span><div>{roles.map(({ id, label, icon: Icon }) => <button type="button" onClick={() => setRole(id)} className={role === id ? "is-active" : ""} key={id}><Icon size={17} />{label}</button>)}</div></div>}
           {(mode === "login" || mode === "register") && <label className="auth-field">
             {mode === "login" ? "Email, nomor HP, atau username staf" : "Email"}
             <input autoComplete={mode === "login" ? "username" : "email"} maxLength="254" onChange={(event) => setEmail(event.target.value)} required type={mode === "login" ? "text" : "email"} value={email} />

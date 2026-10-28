@@ -3,7 +3,7 @@ import {
   ArrowDown, ArrowRight, ArrowUpRight, BadgeCheck, CalendarDays, Check,
   ChevronDown, Clock3, Compass, CreditCard, Fingerprint, Heart,
   Instagram, LayoutDashboard, LockKeyhole, Moon, Search,
-  LogOut, ShieldCheck, ShoppingBag, Sun, Ticket, Trophy, UserRound, Users, Vote,
+  LogOut, ShieldCheck, ShoppingBag, Sun, Ticket, Trash2, Trophy, UserRound, Users, Vote,
   X, Zap
 } from "lucide-react";
 import GoogleAuthModal from "./components/AuthModal.jsx";
@@ -386,6 +386,21 @@ function App() {
     }
   };
 
+  const deleteAccount = async (account) => {
+    if (!["PARTICIPANT", "ORGANIZER"].includes(account.role)) return;
+    if (!window.confirm(`Hapus akun ${account.role === "ORGANIZER" ? "penyelenggara" : "peserta"} “${account.name}”? Tindakan ini tidak dapat dibatalkan.`)) return;
+    setBusyId(account.id);
+    try {
+      await api(`/admin/users/${encodeURIComponent(account.id)}`, { method: "DELETE" });
+      await refreshDashboard();
+      setNotice("Akun berhasil dihapus.");
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusyId("");
+    }
+  };
+
   const changeStatus = async (path, status, refresh = refreshDashboard) => {
     setBusyId(path);
     try {
@@ -609,6 +624,7 @@ function App() {
               onProductUpdate={updateProduct}
               onVariantUpdate={updateProductVariant}
               onUserStatus={(id, status) => changeStatus(`/admin/users/${id}/status`, status)}
+              onUserDelete={deleteAccount}
               onEventStatus={(id, status) => changeStatus(`/admin/events/${id}/status`, status)}
               onRefresh={refreshDashboard}
             />}
@@ -1056,7 +1072,7 @@ function OrganizerEventForm({ eventForm, setEventForm, onEventCreate, busyId }) 
   </article>;
 }
 
-function DashboardPage({ user, summary, data, section, setSection, busyId, productForm, setProductForm, setProductImageFile, eventForm, setEventForm, products = [], onEventCreate, onProductCreate, onProductUpdate, onVariantUpdate, onUserStatus, onEventStatus, onRefresh }) {
+function DashboardPage({ user, summary, data, section, setSection, busyId, productForm, setProductForm, setProductImageFile, eventForm, setEventForm, products = [], onEventCreate, onProductCreate, onProductUpdate, onVariantUpdate, onUserStatus, onUserDelete, onEventStatus, onRefresh }) {
   const [rosterEventId, setRosterEventId] = useState("");
   const [rosterRows, setRosterRows] = useState([]);
   const [rosterBusy, setRosterBusy] = useState(false);
@@ -1122,8 +1138,8 @@ function DashboardPage({ user, summary, data, section, setSection, busyId, produ
             <div className="staff-person"><span className="mini-avatar"><UserRound size={15} /></span><div><strong>{item.name}</strong><small>{[item.email, item.phone, item.institution, item.eventName].filter(Boolean).join(" · ")}</small></div></div>
             <span className={`state-badge state-${item.status.toLowerCase()}`}>{item.status}</span><span className="role-label">{item.role}</span>
             {item.status === "PENDING" && !["ADMIN", "TEAM"].includes(item.role)
-              ? <div className="row-actions"><button type="button" className="approve-button" disabled={busyId.includes(item.id)} onClick={() => onUserStatus(item.id, "ACTIVE")}><Check size={14} /> Terima</button><button type="button" className="reject-button" onClick={() => onUserStatus(item.id, "REJECTED")}><X size={14} /></button></div>
-              : <span className="verified-hint">{item.googleId ? "Google terhubung" : ""}</span>}
+              ? <div className="row-actions"><button type="button" className="approve-button" disabled={busyId.includes(item.id)} onClick={() => onUserStatus(item.id, "ACTIVE")}><Check size={14} /> Terima</button><button type="button" className="reject-button" onClick={() => onUserStatus(item.id, "REJECTED")}><X size={14} /></button><button type="button" className="reject-button" disabled={busyId === item.id} title="Hapus akun" aria-label={`Hapus akun ${item.name}`} onClick={() => onUserDelete(item)}><Trash2 size={14} /></button></div>
+              : <div className="row-actions"><span className="verified-hint">{item.googleId ? "Google terhubung" : ""}</span>{["PARTICIPANT", "ORGANIZER"].includes(item.role) && <button type="button" className="reject-button" disabled={busyId === item.id} title="Hapus akun" aria-label={`Hapus akun ${item.name}`} onClick={() => onUserDelete(item)}><Trash2 size={14} /></button>}</div>}
           </div>)}</div>
         </> : section === "events" ? <>
           <PanelTitle kicker="MANAJEMEN EVENT" title="Pusat verifikasi event" text="Buat event baru, tinjau pengajuan, dan kelola pendaftaran peserta." />

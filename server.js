@@ -240,8 +240,8 @@ const passwordAccountSchema = z.object({
 
 app.post("/api/auth/register", registrationLimiter, asyncRoute(async (req, res) => {
   const input = parse(passwordAccountSchema, req.body);
-  const existing = await prisma.user.findUnique({ where: { email: input.email } });
-  if (existing) throw apiError(409, "Email sudah terdaftar. Silakan masuk atau gunakan Google.");
+  const existing = await prisma.user.findFirst({ where: { email: input.email, role: input.role } });
+  if (existing) throw apiError(409, "Email sudah terdaftar untuk jenis akun ini. Silakan masuk atau gunakan Google.");
 
   try {
     const passwordHash = await hashPassword(input.password);
@@ -284,7 +284,7 @@ app.post("/api/auth/register", registrationLimiter, asyncRoute(async (req, res) 
       const target = error.meta?.target;
       throw apiError(409, Array.isArray(target) && target.includes("phone")
         ? "Nomor telepon sudah digunakan oleh akun lain."
-        : "Email sudah terdaftar. Silakan masuk atau gunakan Google.");
+        : "Email sudah terdaftar untuk jenis akun ini. Silakan masuk atau gunakan Google.");
     }
     throw error;
   }
@@ -293,13 +293,23 @@ app.post("/api/auth/register", registrationLimiter, asyncRoute(async (req, res) 
 app.post("/api/auth/login", loginIpLimiter, loginAttemptLimiter, asyncRoute(async (req, res) => {
   const input = parse(z.object({
     identifier: z.string().trim().min(1).max(254),
-    password: z.string().min(1).max(128)
+    password: z.string().min(1).max(128),
+    role: z.enum(["PARTICIPANT", "ORGANIZER"]).optional()
   }), req.body);
 
   const identifier = input.identifier.toLowerCase();
   let user;
   if (identifier.includes("@")) {
-    user = await prisma.user.findUnique({ where: { email: identifier } });
+    user = input.role
+      ? await prisma.user.findUnique({ where: { email_role: { email: identifier, role: input.role } } })
+      : await prisma.user.findFirst({ where: { email: identifier, role: { in: ["PARTICIPANT", "ORGANIZER"] } }, orderBy: { createdAt: "asc" } });
+    if (!user) {
+      const staffAccount = [
+        { email: process.env.ADMIN_EMAIL, role: "ADMIN" },
+        { email: process.env.TEAM_EMAIL, role: "TEAM" }
+      ].find((account) => account.email && account.email.toLowerCase() === identifier);
+      if (staffAccount) user = await prisma.user.findFirst({ where: { email: identifier, role: staffAccount.role } });
+    }
   } else {
     const phone = normalizePhone(input.identifier);
     if (phone) {
@@ -484,7 +494,7 @@ app.get("/api/auth/google/callback", googleAuthLimiter, asyncRoute(async (req, r
 
     const user = await prisma.$transaction(async (tx) => {
       let existing = await tx.user.findUnique({ where: { googleId: profile.sub } });
-      if (!existing) existing = await tx.user.findUnique({ where: { email: profile.email.toLowerCase() } });
+      if (!existing) existing = await tx.user.findFirst({ where: { email: profile.email.toLowerCase(), role: "PARTICIPANT" } });
       if (!existing) {
         return tx.user.create({
           data: {
@@ -1580,6 +1590,19 @@ app.patch("/api/admin/users/:id/status", requireAuth, requireStaff, asyncRoute(a
   if (!target || ["ADMIN", "TEAM"].includes(target.role)) throw apiError(404, "Akun tidak ditemukan.");
   const user = await prisma.user.update({ where: { id: target.id }, data: { status: input.status } });
   res.json({ user: publicUser(user) });
+}));
+
+app.delete("/api/admin/users/:id", requireAuth, requireStaff, asyncRoute(async (req, res) => {
+  if (req.params.id === req.user.id) throw apiError(400, "Akun yang sedang digunakan tidak dapat dihapus dari sini.");
+  const target = await prisma.user.findUnique({
+    where: { id: req.params.id },
+    include: { _count: { select: { organizedEvents: true, registrations: true, payments: true } } }
+  });
+  if (!target || !["ORGANIZER", "PARTICIPANT"].includes(target.role)) throw apiError(404, "Akun penyelenggara atau peserta tidak ditemukan.");
+  if (target._count.payments > 0) throw apiError(409, "Akun memiliki riwayat pembayaran dan tidak dapat dihapus. Gunakan penolakan atau nonaktifkan akun melalui status.");
+  if (target.role === "ORGANIZER" && target._count.organizedEvents > 0) throw apiError(409, "Akun penyelenggara memiliki event. Pindahkan atau hapus event terlebih dahulu sebelum menghapus akun.");
+  await prisma.user.delete({ where: { id: target.id } });
+  res.json({ deleted: true, id: target.id });
 }));
 
 app.get("/api/admin/events", requireAuth, requireStaff, asyncRoute(async (req, res) => {
